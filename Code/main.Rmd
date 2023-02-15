@@ -1,0 +1,370 @@
+---
+title: "Lung Cancer Analysis"
+author: "Andrew Willems and Tian Hong"
+date: "2022-10-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(
+  root.dir =
+    "~/Documents/Work/Phd_program/hong_lab/Projects/lung_cancer/"
+)
+```
+
+## Small Cell Lung Cancer Analysis
+```{r loading libraries}
+suppressMessages(library(doParallel))
+suppressMessages(library(extrafont))
+suppressMessages(library(glmnet))
+suppressMessages(library(parallel))
+suppressMessages(library(psych))
+suppressMessages(library(survival))
+suppressMessages(library(survminer))
+suppressMessages(library(tidyverse))
+```
+
+```{r loading needed functions}
+source("Code/mirna_calculator.R")
+source("Code/cox_model.R")
+source("Code/risk_calculator.R")
+source("Code/back_elim.R")
+```
+
+```{r check that we have arial font on our system}
+"Arial" %in% fonts()
+```
+
+
+```{r loading data}
+sclc_df <- read.csv(
+  file = "Data/sclc_ucologne_2015/data_mrna_seq_rpkm.txt",
+  sep = "\t"
+)
+
+sclc_df <- subset(sclc_df,
+  select = c(Hugo_Symbol, sclc_ucologne_2015_S00022:sclc_ucologne_2015_S02397)
+)
+
+colnames(sclc_df) <- gsub(
+  x = colnames(sclc_df), pattern = "sclc_ucologne_2015_",
+  replacement = ""
+)
+
+sclc_patient <- read.csv(
+  file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
+  sep = "\t"
+)
+
+sclc_patient <- sclc_patient[4:124, ]
+colnames(sclc_patient)[1] <- "Patient.ID"
+sclc_patient <- sclc_patient[5:121, ]
+sclc_patient <- subset(sclc_patient, select = c(
+  "Patient.ID",
+  "Sex",
+  "Overall.Survival.Status",
+  "Overall.Survival..Months.",
+  "Smoker"
+))
+sclc_patient <- filter(sclc_patient, Smoker != "Never")
+sclc_patient$Smoker <- ifelse(sclc_patient$Smoker == "Current", 1, 0)
+sclc_patient$Overall.Survival.Status <- gsub(
+  pattern = "1:DECEASED",
+  replacement = 1,
+  x = sclc_patient$Overall.Survival.Status
+)
+
+sclc_patient$Overall.Survival.Status <- gsub(
+  pattern = "0:LIVING",
+  replacement = 0,
+  x = sclc_patient$Overall.Survival.Status
+)
+
+rownames(sclc_patient) <- seq_len(nrow(sclc_patient))
+colnames(sclc_patient)[3:4] <- c("vital.status", "time")
+sclc_patient$Patient.ID <- gsub(
+  x = sclc_patient$Patient.ID,
+  pattern = "sclc_ucologne_2015_",
+  replacement = ""
+)
+sclc_patient$vital.status <- as.numeric(sclc_patient$vital.status)
+sclc_patient$time <- as.numeric(sclc_patient$time)
+sclc_patient$time <- sclc_patient$time * 30
+sclc_patient <- na.omit(sclc_patient)
+sclc_patient <- filter(sclc_patient, time != 0)
+
+common_patients <- intersect(sclc_patient$Patient.ID, colnames(sclc_df))
+sclc_genes <- sclc_df$Hugo_Symbol
+sclc_df <- subset(sclc_df, select = colnames(sclc_df) %in% common_patients)
+sclc_patient <- filter(sclc_patient, Patient.ID %in% common_patients)
+sclc_df <- t(sclc_df)
+colnames(sclc_df) <- sclc_genes
+sclc_df <- as.data.frame(sclc_df)
+sclc_df$Patient.ID <- rownames(sclc_df)
+sclc_df <- sclc_df[, !duplicated(colnames(sclc_df))]
+cox_df <- merge(sclc_df, sclc_patient, by = "Patient.ID")
+```
+
+```{r mirna of sclc}
+mirna_targets <- seq(10, 5000, 250)
+mirnas <- seq(2, 8, 1)
+for (m in mirnas[4:7]) {
+  for (t in mirna_targets) {
+    lung_mirna_targets <- mirna_calculator(
+      mirna_remove = c(
+        "hsa-miR-129-2-3p",
+        "hsa-miR-129-1-3p"
+      ),
+      mirna_ranking_name = paste0("Outputs/mirna/finished_metric/mirna_score_", m, "_mirnas_", t, "_targets.rds"),
+      mirna_genes_mat_name = paste0("Outputs/mirna/raw_matrix/mirna_matrix_", m, "_mirnas_", t, "_targets.rds"),
+      print_ts_targets = FALSE,
+      save_common_mirnas = FALSE,
+      ts_version = "8.0",
+      max_mirnas = m,
+      max_mir_targets = t
+    )
+  }
+}
+```
+
+## Sex-agnostic has a c-index of 0.7429591 with 5 non-zero coefficients
+```{r mirna metric 10-200 targets c-index}
+mirna_combos <- seq(10, 500, 10)
+gene_sizes <- seq(2, 20, 1)
+cindices <- rep(0, length(gene_sizes))
+all_coefs <- rep(0, length(gene_sizes))
+active_coefs <- rep(0, length(gene_sizes))
+mirna_target_size <- rep(0, length(gene_sizes))
+counter <- 1
+for (m in mirna_combos[11]) {
+  mirna_ranking <- readRDS(paste0("Outputs/mirna/finished_metric/mirna_score_", m, ".rds"))
+  for (gs in gene_sizes[14]) {
+    cox_model <- cox_model_fitter(
+      gene_num = gs,
+      cox_predictors = names(mirna_ranking)[1:gs],
+      cox_df = cox_df,
+      n_folds = 10,
+      my_seed = 123,
+      my_alpha = 1,
+      tumor_stage = FALSE,
+      tumor_n = FALSE,
+      tumor_m = FALSE,
+      save_coefs = FALSE,
+      calc_auc = FALSE, 
+      my_filename = "Outputs/cox_coefs/top_cox_coefs.csv"
+    )
+
+    cindices[counter] <- cox_model$CV$cvm[which.max(cox_model$CV$cvm)]
+    all_coefs[counter] <- length(coef(cox_model$CV))
+    active_coefs[counter] <- length(cox_model$`Active Coefficients`)
+    mirna_target_size[counter] <- m
+    counter <- counter + 1
+  }
+  # Saving the output for each miRNA combo
+  mirna_sclc_df <- data.frame(
+    gene_size = gene_sizes,
+    c_index = cindices,
+    all_coefs = all_coefs,
+    active_coefs = active_coefs,
+    mirna_target_size = mirna_target_size
+  )
+  write.csv(mirna_sclc_df, file = paste0("Outputs/cox_performance/", gs, "_gene_size_", m, "_mirna_combo_target_coefs.csv"))
+  counter <- 1
+}
+```
+
+
+```{r see c-index performance for combined dataset}
+cox_files <- list.files(path = "~/Documents/Work/PhD_Program/Hong_Lab/Projects/Lung-Cancer/Outputs/cox_performance/")
+all_cindices <- vector("list", length = length(cox_files))
+counter <- 1
+for (f in cox_files[1:50]) {
+  current_file <- read.csv(paste0("Outputs/cox_performance/",f))
+  current_file <- current_file[which.max(current_file$c_index),]
+  all_cindices[[counter]] <- current_file
+  counter <- counter + 1
+}
+
+all_cindices_df <- bind_rows(all_cindices)
+all_cindices_df <- all_cindices_df[which.max(all_cindices_df$c_index),]
+top_cox_coefs <- read.csv("Outputs/cox_coefs/top_cox_coefs.csv")
+top_cox_coefs$hazard_ratio <- exp(top_cox_coefs$active_coefficients)
+
+```
+
+
+```{r km plot}
+p <- risk_score_calculator(
+  my_file = "Outputs/cox_coefs/top_cox_coefs.csv",
+  tumor_data = FALSE,
+  n_data = FALSE,
+  conf_int = TRUE,
+  plot_title = "Sex Agnostic",
+  set_test = FALSE,
+  save_plot = TRUE,
+  km_plot_type = "png",
+  plot_dpi = 600,
+  km_plot = "Outputs/km_plots/sex_agnostic.png",
+  cox_df = cox_df
+)
+```
+
+
+```{r reactome pathway enrichment}
+write.csv(top_cox_coefs$active_genes, "Outputs/enrichment_analysis/active_genes_sex_agnostic.csv")
+
+```
+
+
+```{r deseq2 performance}
+## TODO
+```
+
+
+## Now dropping variables one by one via backwards elimination to determine which variables are most important
+```{r dropping variables}
+# Modify cindicies to length of whatever set of genes you are working on
+cindices <- rep(0, times = length(emt_genes))
+glmnet_genes <- read.csv("Outputs/drop_one/emt_score_active_coefs_12.csv")
+glmnet_genes <- glmnet_genes$genes
+emt_genes <- read.csv("Data/emt_genes_tian.txt", sep = "\t")
+emt_genes <- emt_genes$Gene
+# Same with the length of the for loop
+# This might also mean modifying the current_coefs file path name
+current_coefs <- read.csv(paste0("Outputs/drop_one/emt_score_active_coefs_tian_1.csv"))
+for (g in 1:length(emt_genes)) {
+  current_cox <- back_elim(coefs = current_coefs, data = cox_df, glmnet_genes = glmnet_genes)
+  cindices[g] <- as.numeric(current_cox$`New Cox Model`$concordance[1])
+  print(current_cox$`Removed Coef`)
+  tryCatch(
+    {
+      emt_score_coefs <- cbind(
+        genes = rownames(current_cox$`New Cox Model`$coefficients),
+        coefs = current_cox$`New Cox Model`$coefficients[, "coef"],
+        hazard_ratio = exp(current_cox$`New Cox Model`$coefficients[, "coef"]),
+        p_value = current_cox$`New Cox Model`$coefficients[, "Pr(>|z|)"]
+      )
+      rownames(emt_score_coefs) <- seq_len(nrow(emt_score_coefs))
+      emt_score_coefs <- as.data.frame(emt_score_coefs)
+      current_coefs <- emt_score_coefs
+      write.csv(emt_score_coefs, file = paste0("Outputs/drop_one/tian_list/emt_score_active_coefs_tian_", g + 1, ".csv"))
+      write.csv(cindices, file = "Outputs/drop_one/tian_list/cindices_tian.csv")
+    },
+    error = function(e) {
+      print("There is no longer any variables to drop. Ending here")
+    }
+  )
+}
+```
+
+## We see that we see a modest improvement in performance (c-index of 0.8099671) on 6 predictors. Those predictors are GSC, ZEB1, SMAD3, CEPT1, DDX54, KHSRP. 
+```{r glmnet cox model}
+set.seed(1)
+num_of_cores <- parallel::detectCores()
+registerDoParallel(cores = num_of_cores)
+
+my_y <- Surv(time = cox_df$time, event = cox_df$vital.status)
+my_x <- as.matrix(cox_df[, 2:18808])
+glmnet_cox <- cv.glmnet(
+  x = my_x, y = my_y, nfolds = 10,
+  family = "cox", type.measure = "C", parallel = TRUE
+)
+plot(glmnet_cox)
+coefs <- coef(glmnet_cox, s = glmnet_cox$lambda[9]) # For the 9th lambda that has 7 active genes
+active_index <- which(as.logical(coefs) != 0)
+active_coefficients <- coefs[active_index]
+active_genes <- rownames(coefs)[active_index]
+coefs_to_plot <- cbind(active_genes, active_coefficients)
+write.csv(coefs_to_plot, file = "Outputs/glmnet_active_coefs.csv")
+```
+
+```{r glmnet only km plot}
+km_plot <- risk_score_calculator(
+  my.file = "Outputs/glmnet_active_coefs.csv",
+  tumor.data = FALSE, n.data = FALSE,
+  set.ci = TRUE,
+  cox.df = cox_df,
+  plot.title = "Glmnet Coefs"
+)
+km_plot$`KM Plot`
+```
+
+```{r emt score km plot}
+km_plot <- risk_score_calculator(
+  my.file = "Outputs/emt_score_active_coefs_simplified4.csv",
+  tumor.data = FALSE,
+  n.data = FALSE,
+  set.ci = TRUE,
+  cox.df = cox_df,
+  plot.title = "EMT Score Revised 2 Coefs"
+)
+km_plot$`KM Plot`
+```
+
+```{r combined signature km plot}
+km_plot <- risk_score_calculator(
+  my.file = "Outputs/drop_one/emt_score_active_coefs_6.csv",
+  tumor.data = FALSE,
+  n.data = FALSE,
+  set.ci = TRUE,
+  cox.df = cox_df,
+  my.km.plot = "Figures/combined_emt_mirna_km_plot.g",
+  plot.title = "EMT Score + miRNA"
+)
+km_plot$`KM Plot`
+```
+
+```{r saving combined emt + miRNA KM plot}
+ggsave(
+  filename = "Figures/combined_emt_mirna_km_plot.svg",
+  plot = print(km_plot$`KM Plot`, newpage = FALSE),
+  device = "svg", dpi = 300,
+  width = 40, height = 40,
+  units = "cm"
+)
+```
+
+```{r emt score + miRNA coef plot}
+coef_df <- read.csv("Outputs/drop_one/emt_score_active_coefs_6.csv")
+coef_df$hazard_ratio <- exp(coef_df$coefs)
+coef_plot <- ggplot(data = coef_df, aes(
+  x = genes, y = hazard_ratio,
+  color = genes, fill = genes
+)) +
+  geom_col() +
+  theme_bw() +
+  ggtitle("Coefficients") +
+  ylab("Hazard Ratio") +
+  xlab("Genes") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(
+      hjust = 0.5, face = "bold", size = 40,
+      family = "sans"
+    ),
+    axis.title.x = element_text(size = 40, family = "sans", face = "bold"),
+    axis.title.y = element_text(size = 40, family = "sans", face = "bold"),
+    axis.text.x = element_text(size = 30, family = "sans"),
+    axis.text.y = element_text(size = 30, family = "sans"),
+    legend.text = element_text(size = 25, family = "sans"),
+    legend.title = element_text(size = 40, family = "sans")
+  ) +
+  scale_color_viridis_d(direction = -1) +
+  scale_fill_viridis_d(direction = -1) +
+  scale_y_continuous(expand = expansion(mult = c(1, .1))) +
+  coord_flip()
+
+
+coef_plot
+```
+
+```{r saving combined coef plot}
+ggsave(
+  filename = "Figures/combined_emt_mirna_coef_plot.png",
+  plot = print(coef_plot, newpage = FALSE),
+  device = "png", dpi = 300,
+  width = 40, height = 40,
+  units = "cm"
+)
+```

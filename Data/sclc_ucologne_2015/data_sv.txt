@@ -1,0 +1,51 @@
+Sample_Id	SV_Status	Site1_Hugo_Symbol	Site1_Chromosome	Site2_Hugo_Symbol	Site2_Chromosome	Site2_Effect_On_Frame 	Tumor_Paired_End_Read_Count	Tumor_Split_Read_Count	Event_Info	NCBI_Build	Center
+sclc_ucologne_2015_S02297	SOMATIC	KDM2A	11	GLB1L2	11	in-frame	9	44	KDM2A-GLB1L2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	ELMOD1	3	HPS3	11	out of frame	0	34	ELMOD1-HPS3 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	MTCH2	11	ODZ4	11	in-frame	4	30	MTCH2-ODZ4 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	TM7SF2	11	PRRG4	11	out of frame	9	30	TM7SF2-PRRG4 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	PPME1	11	FYCO1	3	in-frame	0	27	PPME1-FYCO1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	TAF1D	3	PIK3CA	3	in-frame	0	24	TAF1D-PIK3CA Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	SETD5	11	NAALAD2	11	out of frame	0	22	SETD5-NAALAD2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	SOX2OT	3	ATL3	11	out of frame	0	21	SOX2OT-ATL3 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	B3GALNT1	3	C11orf92	11	noncoding RNA	0	20	B3GALNT1-C11orf92 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	MYO7A	11	PSMC3	11	in-frame	5	19	MYO7A-PSMC3 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	EI24	11	PVRL1	11	out of frame	1	18	EI24-PVRL1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	TXNRD3	3	PODXL2	3	in-frame	3	16	TXNRD3-PODXL2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	LOC728588	3	KLHL18	11	in-frame	0	15	LOC728588-KLHL18 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	SOX2OT	3	ST14	11	out of frame	0	14	SOX2OT-ST14 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	RSF1	11	CNTN4	3	out of frame	0	14	RSF1-CNTN4 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	ABI3BP	11	EXT2	3	out of frame	0	13	ABI3BP-EXT2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	GANAB	11	STXBP5L	3	out of frame	0	12	GANAB-STXBP5L Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	SLN	3	CADM2	11	out of frame	0	10	SLN-CADM2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	VPRBP	3	DBR1	3	out of frame	3	9	VPRBP-DBR1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	TBL1XR1	11	UEVLD	3	out of frame	0	8	TBL1XR1-UEVLD Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	MBNL1	11	HIPK3	3	out of frame	0	8	MBNL1-HIPK3 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02297	SOMATIC	ECT2	11	CSTF3	3	out of frame	0	8	ECT2-CSTF3 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	DVL3	3	SCN11A	3	out of frame	26	67	DVL3-SCN11A Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	TEAD1	11	ATP5L	11	in-frame	9	50	TEAD1-ATP5L Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	USP19	3	VEPH1	3	in-frame	9	43	USP19-VEPH1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	CCKBR	3	NGLY1	11	in-frame	0	31	CCKBR-NGLY1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	DUSP8	11	MYEOV	11	out of frame	20	29	DUSP8-MYEOV Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	PRCP	3	CTDSPL	11	in-frame	0	23	PRCP-CTDSPL Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	ZCWPW2	3	PPP4R2	5	out of frame	0	22	ZCWPW2-PPP4R2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	ACVR2B	3	KRTAP5-2	11	out of frame	0	21	ACVR2B-KRTAP5-2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	TPH1	11	ARL6IP5	3	out of frame	0	21	TPH1-ARL6IP5 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	STXBP5L	3	STAG1	3	out of frame	4	20	STXBP5L-STAG1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	ZNF660	3	ARL6	3	out of frame	4	19	ZNF660-ARL6 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	MRPL49	11	SLC25A45	11	out of frame	4	17	MRPL49-SLC25A45 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	HSD17B12	11	MYO7A	11	in-frame	4	14	HSD17B12-MYO7A Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	C3orf70	3	LRRC15	3	out of frame	6	14	C3orf70-LRRC15 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	EFHB	3	TYR	11	in-frame	0	14	EFHB-TYR Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	LRCH3	3	BRSK2	11	in-frame	0	14	LRCH3-BRSK2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	ALKBH3	11	TCIRG1	11	in-frame	4	14	ALKBH3-TCIRG1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	TBCCD1	3	PAFAH1B2	11	out of frame	0	13	TBCCD1-PAFAH1B2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	SACM1L	3	MTMR2	11	out of frame	0	13	SACM1L-MTMR2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	NUP210	3	RSRC1	3	out of frame	1	12	NUP210-RSRC1 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	SASH1	6	SAMD5	6	in-frame	2	12	SASH1-SAMD5 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	ZNF621	3	PIK3R4	11	out of frame	0	12	ZNF621-PIK3R4 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	PACS1	11	KDM2A	11	in-frame	2	10	PACS1-KDM2A Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	PAK1	11	FAT3	11	out of frame	2	10	PAK1-FAT3 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	MYL3	3	NSUN3	3	out of frame	1	9	MYL3-NSUN3 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	PDE12	3	PPFIBP2	11	out of frame	0	9	PDE12-PPFIBP2 Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	LOC100130987	11	TMEM41A	3	out of frame	0	8	LOC100130987-TMEM41A Fusion	GRCh37	ucologne
+sclc_ucologne_2015_S02353	SOMATIC	ODZ4	3	DLEC1	11	out of frame	0	8	ODZ4-DLEC1 Fusion	GRCh37	ucologne
