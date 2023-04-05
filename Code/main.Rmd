@@ -17,21 +17,24 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 
 ```{r load needed packages}
 # Load necessary packages using the pacman package
-# styler: for consistent code formatting
-# hoardr: for caching data to disk
-# tidyverse: for data manipulation and visualization
-# glmnet: for fitting generalized linear models via penalized maximum likelihood
-# devtools: for developing R packages
-# survminer: for survival analysis and visualization
 # data.table: for efficient data manipulation
+# devtools: for developing R packages
 # ggplot2: for data visualization
+# glmnet: for fitting generalized linear models via penalized maximum likelihood
+# hoardr: for caching data to disk
+# Matrix: for sparse matrix operations
+# monocle3: for single-cell analysis and visualization
 # phateR: for visualizing high-dimensional data
 # reticulate: for running Python code in R
 # Rmagic: for running R code in Jupyter notebooks
+# styler: for consistent code formatting
+# survminer: for survival analysis and visualization
+# tidyverse: for data manipulation and visualization
 # viridis: for creating color palettes for data visualization
+
 pacman::p_load(
-  styler, hoardr, tidyverse, glmnet, devtools, survminer,
-  data.table, ggplot2, phateR, reticulate, Rmagic, viridis
+  data.table, devtools, ggplot2, glmnet, hoardr, Matrix, monocle3, phateR, 
+  reticulate, Rmagic, styler, survminer, tidyverse, viridis
 )
 ```
 
@@ -42,23 +45,20 @@ use_condaenv("/Users/andrewwillems/Library/r-miniconda-arm64/envs/r-reticulate")
 
 
 ```{r sourcing needed functions}
-# This code sources several R scripts that contain functions used for analyzing
-# miRNA expression data in lung cancer.
-# The 'lung_mirna_calculator.R' script contains functions for preprocessing and
-# normalizing the miRNA expression data. The 'cox_model.R' script contains a
-# function for performing a Cox proportional hazards model on the data. The
-# 'risk_score_calculator.R' script contains a function for calculating a risk
-# score for each patient based on the results of the Cox model. The 'km_plotter.R'
-# script contains a function for creating a Kaplan-Meier plot to visualize
-# survival data. The 'back_elim.R' script contains a function for performing
-# backwards variable selection on the Cox model to identify the most significant
-# miRNAs associated with survival.
+# This code sources several R scripts that contain functions used for analyzing miRNA expression data in lung cancer.
+# The 'back_elim.R' script contains a function for performing backwards variable selection on the Cox model to identify the most significant miRNAs associated with survival.
+# The 'cox_model.R' script contains a function for performing a Cox proportional hazards model on the data.
+# The 'km_plotter.R' script contains a function for creating a Kaplan-Meier plot to visualize survival data.
+# The 'lung_mirna_calculator.R' script contains functions for preprocessing and normalizing the miRNA expression data.
+# The 'risk_score_calculator.R' script contains a function for calculating a risk score for each patient based on the results of the Cox model.
+# This code also sources 'cell_dataset_builder.R', which contains functions for building a dataset from processed scRNA-seq expression data.
 
-source("Code/lung_mirna_calculator.R")
-source("Code/cox_model.R")
-source("Code/risk_score_calculator.R")
-source("Code/km_plotter.R")
 source("Code/back_elim.R")
+source("Code/cell_dataset_builder.R")
+source("Code/cox_model.R")
+source("Code/km_plotter.R")
+source("Code/lung_mirna_calculator.R")
+source("Code/risk_score_calculator.R")
 ```
 
 
@@ -167,21 +167,25 @@ meta_data <- meta_data %>%
   filter(NT == "tumor")
 
 # Set row names to the first column, which contains the cell IDs
-rownames(meta_data) <- meta_data$V1
+colnames(meta_data)[1] <- "id"
 
 # Join the two dataframes on the "id" column
-sc_df <- sc_df %>% rownames_to_column(var = "id")
-meta_data <- meta_data %>% rownames_to_column(var = "id")
+sc_df$id <- rownames(sc_df)
 sc_df <- inner_join(sc_df, meta_data, by = "id")
-rownames(sc_df) <- sc_df[, "id"]
-sc_df <- sc_df %>% select(-id, -V1, -patient, -NT, -tissue, -cell_type, -nCount_RNA, -nFeature_RNA, -Pre_Map_Reads, -Aligned_Reads, -MappingRate)
+rownames(sc_df) <- sc_df$id
+sc_df <- sc_df %>% select(-id, -patient, -NT, -tissue, -cell_type, -nCount_RNA, -nFeature_RNA, -Pre_Map_Reads, -Aligned_Reads, -MappingRate)
 
 # Keep only genes that are expressed in at least 10 cells
 keep_cols <- colSums(sc_df > 0) > 10
 sc_df <- sc_df[, keep_cols]
 
+sc_rownames <- rownames(sc_df)
+
 # Convert the data frame to integers
-sc_df <- apply(sc_df, 2, as.integer)
+sc_df <- apply(sc_df, c(1, 2), as.integer) %>%
+  as.data.frame()
+
+rownames(sc_df) <- sc_rownames
 
 # Plot the distribution of library sizes
 ggplot() +
@@ -195,14 +199,14 @@ sc_df <- sc_df[keep_rows, ]
 # Normalize the library size and take the square root of the expression values
 sc_df <- library.size.normalize(sc_df)
 sc_df <- sqrt(sc_df)
+
+# Removing intermediate files to keep the environment tidy
+rm(keep_cols, keep_rows)
 ```
 
 ```{r single-cell denoising}
 # Convert the sc_df dataframe to a matrix
 sc_df_mat <- as.matrix(sc_df)
-
-# Convert all elements in the matrix to integers
-sc_df_mat <- apply(sc_df_mat, 2, as.integer)
 
 # Apply the MAGIC (Model-based Analysis of Genome-wide CRISPR/Cas9 Knockout) algorithm to denoise the scRNA-seq data.
 # The 'genes' parameter specifies the set of genes to use for MAGIC imputation. Here, 'all_genes' is used to include all genes in the analysis.
@@ -210,6 +214,39 @@ sc_df_mat <- apply(sc_df_mat, 2, as.integer)
 # The 'n.jobs' parameter specifies the number of cores to use for parallelization. Setting it to -1 indicates that all available cores should be used.
 sc_denoised <- magic(sc_df_mat, genes = "all_genes", seed = 123, n.jobs = -1)
 ```
+
+
+```{r generating pseudotime from single-cell data}
+sc_denoised$result <- sc_denoised$result %>%
+  t()
+
+meta_data <- meta_data %>%
+  filter(id %in% colnames(sc_denoised$result)) %>%
+  column_to_rownames(var = "id")
+
+cds_cell_meta <- meta_data
+cds_gene_meta <- data.frame(gene_short_name = rownames(sc_denoised$result))
+rownames(cds_gene_meta) <- cds_gene_meta$gene_short_name
+
+cds_output <- cell_dataset_builder(
+  vim_genes = cds_gene_meta$gene_short_name,
+  cell_data = sc_denoised$result,
+  cell_meta = cds_cell_meta,
+  gene_meta = cds_gene_meta,
+  my_root = "Y_7",
+  point_size = 2.5,
+  norm_flag = "log",
+  my_cds_filename = "Data/cds_ouput.rds",
+  my_monocle_graph = "Data/vim_pseudotime.svg",
+  my_monocle_graph_genes = "Data/vim_genes.svg",
+  my_pt_data_filename = "Data/vim_pseudotime_data.csv"
+)
+
+cds_output$`PT Graph`
+cds_output$`Cell Progression Graph`
+```
+
+
 
 
 ```{r mirna}
