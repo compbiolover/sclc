@@ -150,51 +150,64 @@ rm(scl_df, scl_patient, scl_genes, common_patients)
 
 
 ```{r single-cell data loading}
-sc_df <- fread("~/Documents/Work/Projects/sclc/Data/OMIX002441-01.csv")
+# Read in the gene expression data and filter out columns that start with "SCLC_P1" or "SCLC_P14"
+sc_df <- fread("Data/OMIX002441-01.csv")
 sc_df <- sc_df %>%
   select(-matches("^(SCLC_P1|SCLC_P14)")) %>%
-  t(.)
+  t()  # transpose the data frame to have cells as rows
 
+# Set column names to the first row of the data frame
 colnames(sc_df) <- sc_df["V1", ]
-sc_df <- sc_df[-1, ]
+sc_df <- sc_df[-1, ]  # remove first row, which is now redundant
 sc_df <- as.data.frame(sc_df)
 
-meta_data <- fread("~/Documents/Work/Projects/sclc/Data/OMIX002441-02.csv")
+# Read in the metadata and filter for tumor samples only
+meta_data <- fread("Data/OMIX002441-02.csv")
 meta_data <- meta_data %>%
   filter(NT == "tumor")
 
+# Set row names to the first column, which contains the cell IDs
 rownames(meta_data) <- meta_data$V1
 
-
+# Join the two dataframes on the "id" column
 sc_df <- sc_df %>% rownames_to_column(var = "id")
 meta_data <- meta_data %>% rownames_to_column(var = "id")
-
-# Join the two dataframes on the "id" column
 sc_df <- inner_join(sc_df, meta_data, by = "id")
 rownames(sc_df) <- sc_df[, "id"]
 sc_df <- sc_df %>% select(-id, -V1, -patient, -NT, -tissue, -cell_type, -nCount_RNA, -nFeature_RNA, -Pre_Map_Reads, -Aligned_Reads, -MappingRate)
 
-# keep genes expressed in at least 10 cells
+# Keep only genes that are expressed in at least 10 cells
 keep_cols <- colSums(sc_df > 0) > 10
-data <- sc_df[, keep_cols]
+sc_df <- sc_df[, keep_cols]
 
-sc_df <- apply(sc_df, c(1, 2), as.integer)
+# Convert the data frame to integers
+sc_df <- apply(sc_df, 2, as.integer)
 
-# look at the distribution of library sizes
+# Plot the distribution of library sizes
 ggplot() +
   geom_histogram(aes(x = rowSums(sc_df)), bins = 50) +
   geom_vline(xintercept = 1000, color = "red")
 
+# Keep only cells with a library size between 1000 and 15000
 keep_rows <- rowSums(sc_df) > 1000 & rowSums(sc_df) < 15000
 sc_df <- sc_df[keep_rows, ]
 
+# Normalize the library size and take the square root of the expression values
 sc_df <- library.size.normalize(sc_df)
 sc_df <- sqrt(sc_df)
 ```
 
 ```{r single-cell denoising}
+# Convert the sc_df dataframe to a matrix
 sc_df_mat <- as.matrix(sc_df)
-sc_df_mat <- apply(sc_df_mat, c(1, 2), as.integer)
+
+# Convert all elements in the matrix to integers
+sc_df_mat <- apply(sc_df_mat, 2, as.integer)
+
+# Apply the MAGIC (Model-based Analysis of Genome-wide CRISPR/Cas9 Knockout) algorithm to denoise the scRNA-seq data.
+# The 'genes' parameter specifies the set of genes to use for MAGIC imputation. Here, 'all_genes' is used to include all genes in the analysis.
+# The 'seed' parameter specifies a random seed for reproducibility.
+# The 'n.jobs' parameter specifies the number of cores to use for parallelization. Setting it to -1 indicates that all available cores should be used.
 sc_denoised <- magic(sc_df_mat, genes = "all_genes", seed = 123, n.jobs = -1)
 ```
 
