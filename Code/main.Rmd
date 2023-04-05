@@ -1,0 +1,204 @@
+---
+title: "SCLC Analysis"
+author: "Andrew Willems & Tian Hong"
+date: "2023-04-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Documents/Work/Projects/sclc/")
+```
+
+## SCLC Analysis
+
+```{r load needed packages}
+library(styler)
+library(hoardr)
+library(tidyverse)
+library(glmnet)
+library(devtools)
+library(survminer)
+pacman::p_load(data.table, ggplot2, phateR, reticulate, Rmagic, Seurat, tidyverse, viridis)
+```
+
+```{r miniconda setup for MAGIC}
+use_condaenv("/Users/andrewwillems/Library/r-miniconda-arm64/envs/r-reticulate")
+```
+
+
+```{r sourcing needed functions}
+source("Code/lung_mirna_calculator.R")
+source("Code/cox_model.R")
+source("Code/risk_score_calculator.R")
+source("Code/km_plotter.R")
+source("Code/back_elim.R")
+```
+
+
+```{r reading data}
+slc_df <- read.csv(
+    file = "Data/sclc_ucologne_2015/data_mrna_seq_rpkm.txt",
+    sep = "\t"
+)
+
+
+slc_df <- subset(slc_df,
+    select = c(Hugo_Symbol, sclc_ucologne_2015_S00022:sclc_ucologne_2015_S02397)
+)
+
+colnames(slc_df) <- gsub(
+    x = colnames(slc_df), pattern = "sclc_ucologne_2015_",
+    replacement = ""
+)
+
+slc_patient <- read.csv(
+    file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
+    sep = "\t"
+)
+
+slc_patient <- slc_patient[4:124, ]
+colnames(slc_patient)[1] <- "Patient.ID"
+slc_patient <- slc_patient[5:121, ]
+slc_patient <- subset(slc_patient, select = c(
+    "Patient.ID",
+    "Sex",
+    "Overall.Survival.Status",
+    "Overall.Survival..Months.",
+    "Smoker"
+))
+slc_patient <- filter(slc_patient, Smoker != "Never")
+slc_patient$Smoker <- ifelse(slc_patient$Smoker == "Current", 1, 0)
+slc_patient$Overall.Survival.Status <- gsub(
+    pattern = "1:DECEASED",
+    replacement = 1,
+    x = slc_patient$Overall.Survival.Status
+)
+
+slc_patient$Overall.Survival.Status <- gsub(
+    pattern = "0:LIVING",
+    replacement = 0,
+    x = slc_patient$Overall.Survival.Status
+)
+
+rownames(slc_patient) <- seq_len(nrow(slc_patient))
+colnames(slc_patient)[3:4] <- c("vital.status", "time")
+slc_patient$Patient.ID <- gsub(
+    x = slc_patient$Patient.ID,
+    pattern = "sclc_ucologne_2015_",
+    replacement = ""
+)
+slc_patient$vital.status <- as.numeric(slc_patient$vital.status)
+slc_patient$time <- as.numeric(slc_patient$time)
+slc_patient$time <- slc_patient$time * 30
+slc_patient <- na.omit(slc_patient)
+slc_patient <- filter(slc_patient, time != 0)
+
+common_patients <- intersect(slc_patient$Patient.ID, colnames(slc_df))
+slc_genes <- slc_df$Hugo_Symbol
+slc_df <- subset(slc_df, select = colnames(slc_df) %in% common_patients)
+slc_patient <- filter(slc_patient, Patient.ID %in% common_patients)
+slc_df <- t(slc_df)
+colnames(slc_df) <- slc_genes
+slc_df <- as.data.frame(slc_df)
+slc_df$Patient.ID <- rownames(slc_df)
+slc_df <- slc_df[, !duplicated(colnames(slc_df))]
+cox_df <- merge(slc_df, slc_patient, by = "Patient.ID")
+head(cox_df)
+cox_df_sub <- subset(cox_df, select = c(2:18808))
+head(cox_df_sub)
+cox_df_sub <- scale(cox_df_sub)
+cox_df_sub <- cbind(cox_df_sub, cox_df$`Sex`, cox_df$`vital.status`, cox_df$`time`, cox_df$`Smoker`)
+cox_df_sub <- as.data.frame(cox_df_sub)
+colnames(cox_df_sub)[18808:18811] <- c("Sex", "vital.status", "time", "Smoker")
+```
+
+
+```{r single-cell data loading}
+sc_df <- fread("~/Documents/Work/Projects/sclc/Data/OMIX002441-01.csv")
+sc_df <- sc_df %>% 
+  select(-matches("^(SCLC_P1|SCLC_P14)")) %>%
+  t(.)
+
+colnames(sc_df) <- sc_df["V1",]
+sc_df <- sc_df[-1,]
+sc_df <- as.data.frame(sc_df)
+
+meta_data <- fread("~/Documents/Work/Projects/sclc/Data/OMIX002441-02.csv")
+meta_data <- meta_data %>%
+  filter(NT=="tumor")
+
+rownames(meta_data) <- meta_data$V1
+
+
+sc_df <- sc_df %>% rownames_to_column(var = "id")
+meta_data <- meta_data %>% rownames_to_column(var = "id")
+
+# Join the two dataframes on the "id" column
+sc_df <- inner_join(sc_df, meta_data, by = "id")
+rownames(sc_df) <- sc_df[,"id"]
+sc_df <- sc_df %>% select(-id, -V1, -patient, -NT, -tissue, -cell_type, -nCount_RNA, -nFeature_RNA, -Pre_Map_Reads, -Aligned_Reads, -MappingRate)
+
+# keep genes expressed in at least 10 cells
+keep_cols <- colSums(sc_df > 0) > 10
+data <- sc_df[,keep_cols]
+
+sc_df <- apply(sc_df, c(1,2), as.integer)
+
+# look at the distribution of library sizes
+ggplot() +
+  geom_histogram(aes(x=rowSums(sc_df)), bins=50) +
+  geom_vline(xintercept = 1000, color='red')
+
+keep_rows <- rowSums(sc_df) > 1000 & rowSums(sc_df) < 15000
+sc_df <- sc_df[keep_rows,]
+
+sc_df <- library.size.normalize(sc_df)
+sc_df <- sqrt(sc_df)
+```
+
+```{r single-cell denoising}
+sc_df_mat <- as.matrix(sc_df)
+sc_df_mat <- apply(sc_df_mat, c(1,2), as.integer)
+sc_denoised <- magic(sc_df_mat, genes = 'all_genes', seed = 123, n.jobs = -1)
+```
+
+
+```{r mirna}
+head(cox_df_sub)
+mirna_ranking <- readRDS("Outputs/mirna/finished_metric/lung_mirnas_100_targets.rds")
+gene_sizes <- seq(2, 20, 1)
+cindices <- rep(0, length(gene_sizes))
+all_coefs <- rep(0, length(gene_sizes))
+active_coefs <- rep(0, length(gene_sizes))
+counter <- 1
+for (gs in gene_sizes) {
+    cox_model <- cox_model_fitter(
+        gene_num = gs,
+        cox_predictors = names(mirna_ranking)[1:gs],
+        cox_df = cox_df,
+        n_folds = 10,
+        my_seed = 1,
+        my_alpha = 1,
+        tumor_stage = FALSE,
+        tumor_n = FALSE,
+        tumor_m = FALSE,
+        save_coefs = TRUE,
+        calc_auc = FALSE,
+        my_filename = "Outputs/cox_coefs/sclc_all_sexes_small_number_of_coefs_100_targets.csv"
+    )
+
+    cindices[counter] <- cox_model$CV$cvm[which.max(cox_model$CV$cvm)]
+    all_coefs[counter] <- length(coef(cox_model$CV))
+    active_coefs[counter] <-
+        counter <- counter + 1
+}
+
+mirna_sclc_df <- data.frame(
+    gene_size = gene_sizes,
+    c_index = cindices,
+    all_coefs = all_coefs
+)
+
+write.csv(mirna_sclc_df, file = "Outputs/cox_coefs/sclc_all_sexes_across_gene_size_small_number_of_coefs_100_targets.csv")
+```
