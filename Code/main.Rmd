@@ -33,8 +33,8 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 # viridis: for creating color palettes for data visualization
 
 pacman::p_load(
-  data.table, devtools, ggplot2, glmnet, hoardr, Matrix, monocle3, phateR, 
-  reticulate, Rmagic, styler, survminer, tidyverse, viridis
+  cowplot, data.table, devtools, ggplot2, glmnet, hoardr, igraph, Matrix, monocle3, parallel, phateR,
+  reticulate, Rmagic, styler, survminer, svglite, switchde, tidyverse, viridis
 )
 ```
 
@@ -53,12 +53,7 @@ use_condaenv("/Users/andrewwillems/Library/r-miniconda-arm64/envs/r-reticulate")
 # The 'risk_score_calculator.R' script contains a function for calculating a risk score for each patient based on the results of the Cox model.
 # This code also sources 'cell_dataset_builder.R', which contains functions for building a dataset from processed scRNA-seq expression data.
 
-source("Code/back_elim.R")
-source("Code/cell_dataset_builder.R")
-source("Code/cox_model.R")
-source("Code/km_plotter.R")
-source("Code/lung_mirna_calculator.R")
-source("Code/risk_score_calculator.R")
+invisible(lapply(list.files("Code", pattern = "\\.R$", full.names = TRUE), source))
 ```
 
 
@@ -80,6 +75,7 @@ scl_patient <- read.csv(
   file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
   sep = "\t"
 )
+
 scl_patient <- scl_patient %>%
   slice(5:121) %>%
   rename(
@@ -142,7 +138,8 @@ scl_common <- left_join(scl_common, scl_patient[, c(
   "patient.id"
 )],
 by = "patient.id"
-)
+) %>%
+  rename_all(tolower)
 
 # Removing intermediate files to keep the environment clean
 rm(scl_df, scl_patient, scl_genes, common_patients)
@@ -154,11 +151,11 @@ rm(scl_df, scl_patient, scl_genes, common_patients)
 sc_df <- fread("Data/OMIX002441-01.csv")
 sc_df <- sc_df %>%
   select(-matches("^(SCLC_P1|SCLC_P14)")) %>%
-  t()  # transpose the data frame to have cells as rows
+  t() # transpose the data frame to have cells as rows
 
 # Set column names to the first row of the data frame
 colnames(sc_df) <- sc_df["V1", ]
-sc_df <- sc_df[-1, ]  # remove first row, which is now redundant
+sc_df <- sc_df[-1, ] # remove first row, which is now redundant
 sc_df <- as.data.frame(sc_df)
 
 # Read in the metadata and filter for tumor samples only
@@ -188,9 +185,27 @@ sc_df <- apply(sc_df, c(1, 2), as.integer) %>%
 rownames(sc_df) <- sc_rownames
 
 # Plot the distribution of library sizes
-ggplot() +
+p1 <- ggplot() +
   geom_histogram(aes(x = rowSums(sc_df)), bins = 50) +
-  geom_vline(xintercept = 1000, color = "red")
+  geom_vline(xintercept = 1000, color = "red") +
+  theme(
+    panel.background = element_blank(),
+    axis.title = element_text(size = 22, face = "bold"),
+    axis.text = element_text(size = 20),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.ticks = element_line(linewidth = 1.25),
+    axis.ticks.length = unit(0.2, units = "cm"),
+    axis.line = element_line(color = "black", linewidth = 1.25),
+    plot.subtitle = element_text(hjust = 0.5, size = 22)
+  ) +
+  ggtitle("Distribution of Library Sizes in scRNA-seq", subtitle = "Distribution of library sizes after keeping genes that have positive (> 0) expression in at least 10 cells") +
+  xlab("Library Size") +
+  ylab("Count") +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_continuous(expand = c(0, 0))
+
+ggsave(plot = p1, width = 20, height = 20, units = "in", dpi = 600, device = "png", filename = "sc_library_distribution_sizes.png", path = "Outputs/")
+ggsave(plot = p1, width = 20, height = 20, units = "in", dpi = 600, device = "svg", filename = "sc_library_distribution_sizes.svg", path = "Outputs/")
 
 # Keep only cells with a library size between 1000 and 15000
 keep_rows <- rowSums(sc_df) > 1000 & rowSums(sc_df) < 15000
@@ -201,7 +216,7 @@ sc_df <- library.size.normalize(sc_df)
 sc_df <- sqrt(sc_df)
 
 # Removing intermediate files to keep the environment tidy
-rm(keep_cols, keep_rows)
+rm(keep_cols, keep_rows, sc_rownames, p1, scl_common)
 ```
 
 ```{r single-cell denoising}
@@ -213,6 +228,10 @@ sc_df_mat <- as.matrix(sc_df)
 # The 'seed' parameter specifies a random seed for reproducibility.
 # The 'n.jobs' parameter specifies the number of cores to use for parallelization. Setting it to -1 indicates that all available cores should be used.
 sc_denoised <- magic(sc_df_mat, genes = "all_genes", seed = 123, n.jobs = -1)
+
+saveRDS(sc_denoised, "Outputs/denoised_sc_data.rds")
+
+rm(sc_df_mat)
 ```
 
 
@@ -228,62 +247,100 @@ cds_cell_meta <- meta_data
 cds_gene_meta <- data.frame(gene_short_name = rownames(sc_denoised$result))
 rownames(cds_gene_meta) <- cds_gene_meta$gene_short_name
 
+emt_genes <- read.csv("Data/emt_genes_tian.txt", sep = "\t")
+
+# Getting common genes between EMT list and our list
+common_emt_genes <- intersect(cds_gene_meta$gene_short_name, emt_genes$Gene)
+common_emt_genes <- data.frame(gene_short_name = common_emt_genes)
+rownames(common_emt_genes) <- common_emt_genes$gene_short_name
+
 cds_output <- cell_dataset_builder(
-  vim_genes = cds_gene_meta$gene_short_name,
+  gene_expression = "TUBA1A",
   cell_data = sc_denoised$result,
-  cell_meta = cds_cell_meta,
   gene_meta = cds_gene_meta,
-  my_root = "Y_7",
+  cell_meta = cds_cell_meta,
+  pt_root = "Y_7",
+  gene_title = "TUBA1A",
+  pt_title = "TUBA1A",
   point_size = 2.5,
-  norm_flag = "log",
-  my_cds_filename = "Data/cds_ouput.rds",
-  my_monocle_graph = "Data/vim_pseudotime.svg",
-  my_monocle_graph_genes = "Data/vim_genes.svg",
-  my_pt_data_filename = "Data/vim_pseudotime_data.csv"
+  norm_flag = "none",
+  use_ordering_funct = FALSE,
+  cds_filename = "Outputs/cds.rds",
+  plot_file = "Outputs/emt_gene_expression.png",
+  pt_file = "Outputs/pt_expression.png",
+  pt_data_filename = "Outputs/TUBA1A_pseudotime_data.csv"
 )
 
-cds_output$`PT Graph`
-cds_output$`Cell Progression Graph`
+# Bringing the cell expression and pseudotime graphs together into a single plot
+combo_plot <- ggarrange(cds_output$Cell_Progression_Graph, cds_output$PT_Graph, ncol = 2, nrow = 1, align = "h", labels = c("A.", "B."), legend = "bottom", font.label = c(size = 18))
+combo_plot <- combo_plot + ggtitle("SDE Pseudotime Ordering") +
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+
+# add a caption using ggdraw
+caption_text <- "Figure S1: Panel A shows the gene expression levels of TUBA1A, which is a marker for mesenchymal cells during epithelial-mesenchymal transition (EMT). This gene's expression levels were used as the basis for calculating pseudotime in our single-cell RNA sequencing (scRNA-seq) dataset.
+
+Panel B shows the calculated pseudotime of the scRNA-seq dataset, based on the expression levels of TUBA1A in panel A. The annotations of 1 and 2 (seen in white circles) indicate the roots of the pseudotime calculations, where the pseudotime is equal to 0. As we move along the trajectory (represented by the solid black line), the pseudotime values increase, mirroring the expression pattern of TUBA1A. "
+caption <- ggdraw() +
+  draw_label(caption_text, fontface = "plain", size = 10, x = 0, hjust = 0)
+
+# add the caption to the bottom of the plot
+plots_with_caption <- plot_grid(combo_plot, caption, nrow = 2, align = "v", axis = "tblr")
+
+
+ggsave(
+  plot = combo_plot, device = "png", dpi = 600, width = 7, height = 5,
+  units = "in", filename = "Outputs/sde_foundation_plot.png", bg = "white"
+)
+
+ggsave(
+  plot = combo_plot, device = "svg", dpi = 600, width = 7, height = 5,
+  units = "in", filename = "Outputs/sde_foundation_plot.svg", bg = "white"
+)
+```
+
+```{r sde metric}
+invisible(sde_genes <- switchde_calculator(sc_denoised$result,
+  pseudo_time = cds_output$PT_Data
+))
+
+saveRDS(sde_genes, "Outputs/sde_genes.rds")
+
+head(sde_genes)
+```
+
+
+```{r mad metric}
+mad_genes <- mad_calculator(sc_denoised$result)
+saveRDS(mad_genes, "Outputs/mad_genes.rds")
+head(mad_genes)
 ```
 
 
 
-
 ```{r mirna}
-head(cox_df_sub)
-mirna_ranking <- readRDS("Outputs/mirna/finished_metric/lung_mirnas_100_targets.rds")
-gene_sizes <- seq(2, 20, 1)
-cindices <- rep(0, length(gene_sizes))
-all_coefs <- rep(0, length(gene_sizes))
-active_coefs <- rep(0, length(gene_sizes))
-counter <- 1
-for (gs in gene_sizes) {
-  cox_model <- cox_model_fitter(
-    gene_num = gs,
-    cox_predictors = names(mirna_ranking)[1:gs],
-    cox_df = cox_df,
-    n_folds = 10,
-    my_seed = 1,
-    my_alpha = 1,
-    tumor_stage = FALSE,
-    tumor_n = FALSE,
-    tumor_m = FALSE,
-    save_coefs = TRUE,
-    calc_auc = FALSE,
-    my_filename = "Outputs/cox_coefs/sclc_all_sexes_small_number_of_coefs_100_targets.csv"
-  )
+# Load the data
+mirna_data <- read.csv("Data/mirna_data/hmdd-3-2-all-data.txt", sep = "\t")
 
-  cindices[counter] <- cox_model$CV$cvm[which.max(cox_model$CV$cvm)]
-  all_coefs[counter] <- length(coef(cox_model$CV))
-  active_coefs[counter] <-
-    counter <- counter + 1
+# Filter the data down to just miRNAs that are lung related and are
+# classified as upregulated/increased
+mirna_data <- mirna_data %>%
+  filter(grepl("up", category)) %>%
+  filter(disease %in% c(
+    "Lung Disease [unspecific]", "Lung Fibrosis",
+    "Lung Injury [unspecific]", "Lung Neoplasms"
+  )) %>%
+  select(mir)
+
+
+# Now sending those miRNAs to TargetScan
+mirna_num <- seq(10, 100, 5)
+mirna_target_num <- seq(2, 8, 1)
+for (m in mirna_num[1:19]) {
+  for (t in mirna_target_num[1:7]){
+    mirna_genes <- mirna_calculator(ts_org = "Human", ts_version = "8.0", max_mir_targets = 8, cancer_up = FALSE, cancer_type1 = "lung cancer", print_ts_targets = TRUE, max_mirnas = m, mirna_genes_mat_name = paste0("Outputs/decreased_mirna_targets/mirna_genes_mat_", m, "_mirnas_", t, "_targets_low.rds"), mirna_ranking_name = paste0("Outputs/decreased_mirna_targets/mirna_genes_", m, "_mirnas_", t, "_targets_low.rds"))
+  }
 }
-
-mirna_sclc_df <- data.frame(
-  gene_size = gene_sizes,
-  c_index = cindices,
-  all_coefs = all_coefs
-)
-
-write.csv(mirna_sclc_df, file = "Outputs/cox_coefs/sclc_all_sexes_across_gene_size_small_number_of_coefs_100_targets.csv")
 ```
