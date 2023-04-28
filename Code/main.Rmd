@@ -26,6 +26,7 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 # monocle3: for single-cell analysis and visualization
 # phateR: for visualizing high-dimensional data
 # reticulate: for running Python code in R
+# retry: for allowing us to repeatedly restart code due to timeouts
 # Rmagic: for running R code in Jupyter notebooks
 # styler: for consistent code formatting
 # survminer: for survival analysis and visualization
@@ -33,8 +34,8 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 # viridis: for creating color palettes for data visualization
 
 pacman::p_load(
-  cowplot, data.table, devtools, ggplot2, glmnet, hoardr, igraph, Matrix, monocle3, parallel, phateR,
-  reticulate, Rmagic, styler, survminer, svglite, switchde, tidyverse, viridis
+  cowplot, data.table, devtools, ggplot2, glmnet, hoardeR, igraph, Matrix, monocle3, parallel, phateR,
+  reticulate, retry, Rmagic, styler, survminer, svglite, switchde, tidyverse, viridis
 )
 ```
 
@@ -302,9 +303,9 @@ ggsave(
 ```
 
 ```{r sde metric}
-invisible(sde_genes <- switchde_calculator(sc_denoised$result,
+sde_genes <- switchde_calculator(sc_denoised$result,
   pseudo_time = cds_output$PT_Data
-))
+)
 
 saveRDS(sde_genes, "Outputs/sde_genes.rds")
 
@@ -322,7 +323,7 @@ head(mad_genes)
 
 ```{r mirna}
 # Load the data
-mirna_data <- read.csv("Data/mirna_data/hmdd-3-2-all-data.txt", sep = "\t")
+mirna_data <- read.csv("Data/mirna_data/hmdd_3_2_all_data.txt", sep = "\t")
 
 # Filter the data down to just miRNAs that are lung related and are
 # classified as upregulated/increased
@@ -336,11 +337,11 @@ mirna_data <- mirna_data %>%
 
 
 # Now sending those miRNAs to TargetScan
-mirna_num <- seq(10, 100, 5)
+mirna_num <- seq(100, 800, 100)
 mirna_target_num <- seq(2, 8, 1)
-for (m in mirna_num[1:19]) {
+for (m in mirna_num[6:8]) {
   for (t in mirna_target_num[1:7]){
-    mirna_genes <- mirna_calculator(ts_org = "Human", ts_version = "8.0", max_mir_targets = 8, cancer_up = FALSE, cancer_type1 = "lung cancer", print_ts_targets = TRUE, max_mirnas = m, mirna_genes_mat_name = paste0("Outputs/decreased_mirna_targets/mirna_genes_mat_", m, "_mirnas_", t, "_targets_low.rds"), mirna_ranking_name = paste0("Outputs/decreased_mirna_targets/mirna_genes_", m, "_mirnas_", t, "_targets_low.rds"))
+    mirna_genes <- mirna_calculator(ts_org = "Human", ts_version = "8.0", max_mir_targets = t, cancer_up = TRUE, cancer_type1 = "lung cancer", print_ts_targets = FALSE, max_mirnas = m, mirna_genes_mat_name = paste0("Outputs/increased_mirna_targets/mirna_genes_mat_", m, "_mirnas_", t, "_targets_up.rds"), mirna_ranking_name = paste0("Outputs/increased_mirna_targets/mirna_genes_", m, "_mirnas_", t, "_targets_up.rds"))
   }
 }
 ```

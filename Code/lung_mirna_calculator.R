@@ -11,11 +11,24 @@ mirna_calculator <- function(ts_org = "Human",
                              include_sites_score = FALSE,
                              mirna_genes_mat_name = "Outputs/lung_mirna_score_matrix.rds",
                              mirna_ranking_name = "Outputs/lung_mirnas.rds") {
-  library(hoardr)
-
+  library(hoardeR)
 
   # Set up the number of cores for parallelization
-  num_cores <- detectCores() - 1
+  plan(multisession, workers = 11)
+
+  # Timeout error code
+  is_timeout <- function(err) {
+    inherits(err, "TimeoutError")
+  }
+
+  stop_after_n_tries <- function(n) {
+    function(err, try_num) {
+      if (try_num >= n) {
+        stop("Retry limit reached")
+      }
+      TRUE
+    }
+  }
 
 
   # miRNAs from miRmap
@@ -23,7 +36,9 @@ mirna_calculator <- function(ts_org = "Human",
 
   # Read and filter cancer data
   cancer_data <- read.csv(file = if (cancer_up) "Data/mirna_data/dbdemc_2.0_high.txt" else "Data/mirna_data/dbdemc_2.0_low.txt", sep = "\t")
-  cancer_data <- filter(cancer_data, Cancer.Type == cancer_type1)
+  cancer_data <- cancer_data %>%
+    filter(Cancer.Type == cancer_type1) %>%
+    filter(Status == "UP")
 
   # Extract miRNA names
   cancer_mirnas <- unique(cancer_data$miRBase.Update.ID)
@@ -42,8 +57,11 @@ mirna_calculator <- function(ts_org = "Human",
     cat("The number of common mirnas is:", length(common_mirnas), "\n")
   }
 
+
+
   # Get TargetScan results
-  mirna_targets <- mclapply(common_mirnas, function(m) {
+  mirna_targets <- future_map(common_mirnas, function(m) {
+    print(paste0("Processing miRNA: "), m)
     hoardeR::targetScan(
       mirna = m,
       species = ts_org,
@@ -53,12 +71,22 @@ mirna_calculator <- function(ts_org = "Human",
       mutate(miRNA_name_final = m)
   })
 
+
   # Simplify TargetScan results
   total_list <- lapply(mirna_targets, function(df) {
-    df %>%
-      select(Ortholog, miRNA_name_final) %>%
-      rename(gene_list = Ortholog, mirna_list = miRNA_name_final)
+    if ("Ortholog" %in% names(df)) {
+      df %>%
+        select(Ortholog, miRNA_name_final) %>%
+        rename(gene_list = Ortholog, mirna_list = miRNA_name_final)
+    } else {
+      writeLines("This miRNA is not found in TargetScan. We are continuing on to the next miRNA")
+      NULL
+    }
   })
+  
+  
+  # Removing any lists in total_list that are NULL (i.e. aren't found in TargetScan)
+  total_list <- total_list[!sapply(total_list, is.null)]
 
   # Create score matrix
   all_mirs_for_score <- unique(unlist(sapply(total_list, "[[", "mirna_list")))
