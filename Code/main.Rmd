@@ -35,7 +35,7 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 
 pacman::p_load(
   cowplot, data.table, devtools, ggplot2, glmnet, hoardeR, igraph, Matrix, monocle3, parallel, phateR,
-  reticulate, retry, Rmagic, styler, survminer, svglite, switchde, tidyverse, viridis
+  reticulate, retry, Rmagic, styler, survival, survminer, svglite, switchde, tidyverse, viridis
 )
 ```
 
@@ -83,7 +83,7 @@ scl_patient <- scl_patient %>%
     Patient.ID = X.Patient.Identifier, Overall.Survival.Status = Overall.Survival.Status,
     Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker
   ) %>%
-  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Smoker) %>%
+  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Smoker, Chemotherapy, Neoadjuvant.Chemotherapy, N.Stage, M.Stage, UICC.Tumor.Stage) %>%
   filter(Smoker != "Never") %>%
   filter(Smoker != "") %>%
   mutate(
@@ -136,11 +136,16 @@ scl_common <- scl_common %>%
 scl_common <- left_join(scl_common, scl_patient[, c(
   "sex", "smoker",
   "vital.status", "time",
-  "patient.id"
+  "patient.id", "n.stage", "m.stage", "uicc.tumor.stage",
+  "chemotherapy", "neoadjuvant.chemotherapy"
 )],
 by = "patient.id"
 ) %>%
-  rename_all(tolower)
+  rename_all(tolower) %>%
+  select(
+    patient.id, sex, smoker, vital.status, time, n.stage, m.stage,
+    uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, everything()
+  )
 
 # Removing intermediate files to keep the environment clean
 rm(scl_df, scl_patient, scl_genes, common_patients)
@@ -217,7 +222,7 @@ sc_df <- library.size.normalize(sc_df)
 sc_df <- sqrt(sc_df)
 
 # Removing intermediate files to keep the environment tidy
-rm(keep_cols, keep_rows, sc_rownames, p1, scl_common)
+rm(keep_cols, keep_rows, sc_rownames, p1)
 ```
 
 ```{r single-cell denoising}
@@ -313,13 +318,337 @@ head(sde_genes)
 ```
 
 
+```{r ideal gene number for sde metric}
+gene_sizes <- seq(1, 20, 1)
+cox_outputs <- list()
+counter <- 1
+for (gn in gene_sizes) {
+  current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 1, cox_predictors = sde_genes, cox_df = scl_common, gene_num = gn, n_folds = 10, calc_auc = FALSE, save_coefs = FALSE, verbose = FALSE, cat_preds = FALSE)
+  cox_outputs[[counter]] <- current_cox
+  cindex <- round(current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)], digits = 4)
+  cindex_active_genes <- as.numeric(as.vector(current_cox$CV$nzero[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]))
+  lambda <- current_cox$CV$lambda.min
+  measure <- "Concordance-index"
+  cindex_se <- round(as.numeric(current_cox$CV$cvsd[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]), digits = 4)
+  cindex_index <- current_cox$CV$index["min", ]
+  cindex_df <- as.data.frame(cbind(cindex, cindex_se, cindex_active_genes, lambda, measure, cindex_index))
+  write.csv(cindex_df, paste0("Outputs/sde/glmnet_", gn, "_genes_glmnet_index_", cindex_index, "_lambda_", lambda, ".csv"))
+  counter <- counter + 1
+}
+
+
+# Now seeing what the best c-index is
+read_files <- function(folder_path, pattern) {
+  # Get a list of all files in the folder that match the pattern
+  file_list <- list.files(path = folder_path, pattern = pattern, full.names = TRUE)
+
+  # Read in all CSV files and combine into a single dataframe
+  data <- do.call(rbind, lapply(file_list, read.csv))
+
+  return(data)
+}
+
+all_sde_cindices <- read_files(folder_path = "Outputs/sde/", pattern = "*.csv")
+max_sde_cindex <- all_mad_cindices[which.max(all_sde_cindices$cindex), ] # 0.7221 with 7 active genes
+```
+
 ```{r mad metric}
 mad_genes <- mad_calculator(sc_denoised$result)
 saveRDS(mad_genes, "Outputs/mad_genes.rds")
 head(mad_genes)
 ```
 
+```{r ideal gene size for mad}
+gene_sizes <- seq(1, 20, 1)
+cox_outputs <- list()
+counter <- 1
+for (gn in gene_sizes) {
+  current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 1, cox_predictors = mad_genes, cox_df = scl_common, gene_num = gn, n_folds = 10, calc_auc = FALSE, save_coefs = FALSE, verbose = FALSE, cat_preds = FALSE)
+  cox_outputs[[counter]] <- current_cox
+  cindex <- round(current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)], digits = 4)
+  cindex_active_genes <- as.numeric(as.vector(current_cox$CV$nzero[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]))
+  lambda <- current_cox$CV$lambda.min
+  measure <- "Concordance-index"
+  cindex_se <- round(as.numeric(current_cox$CV$cvsd[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]), digits = 4)
+  cindex_index <- current_cox$CV$index["min", ]
+  cindex_df <- as.data.frame(cbind(cindex, cindex_se, cindex_active_genes, lambda, measure, cindex_index))
+  write.csv(cindex_df, paste0("Outputs/mad/glmnet_", gn, "_genes_glmnet_index_", cindex_index, "_lambda_", lambda, ".csv"))
+  counter <- counter + 1
+}
 
+
+# Now seeing what the best c-index is
+read_files <- function(folder_path, pattern) {
+  # Get a list of all files in the folder that match the pattern
+  file_list <- list.files(path = folder_path, pattern = pattern, full.names = TRUE)
+
+  # Read in all CSV files and combine into a single dataframe
+  data <- do.call(rbind, lapply(file_list, read.csv))
+
+  return(data)
+}
+
+all_mad_cindices <- read_files(folder_path = "Outputs/mad/", pattern = "*.csv")
+max_mad_cindex <- all_mad_cindices[which.max(all_mad_cindices$cindex), ] # 0.7718 with 13 active genes
+all_mad_cindices_sub <- all_mad_cindices %>% filter(cindex_active_genes == 7 | cindex_active_genes == 8) # 0.7221 with 7 active genes
+```
+
+
+```{r mirna with small number of active genes cindex}
+file_list <- list.files(path = "Outputs/mirna/rds", pattern = "*.rds", full.names = TRUE)
+file_list <- file_list[!grepl("_mat_", file_list)]
+
+gene_sizes <- seq(2, 8, 1)
+cox_outputs <- list()
+counter <- 1
+for (f in file_list) {
+  print(f)
+  for (gn in gene_sizes) {
+    current_mirna_met <- readRDS(paste0(f))
+    current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 1, cox_predictors = current_mirna_met, cox_df = scl_common, gene_num = gn, n_folds = 10, calc_auc = FALSE, save_coefs = FALSE, verbose = FALSE, cat_preds = FALSE)
+    cox_outputs[[counter]] <- current_cox
+    mirna_genes <- str_extract(f, "(?<=mirna_genes_)\\d+")
+    mirnas <- str_extract(f, "(?<=mirnas_)\\d+")
+    cindex <- round(current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)], digits = 4)
+    cindex_active_genes <- as.numeric(as.vector(current_cox$CV$nzero[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]))
+    lambda <- current_cox$CV$lambda.min
+    measure <- "Concordance-index"
+    cindex_se <- round(as.numeric(current_cox$CV$cvsd[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]), digits = 4)
+    cindex_index <- current_cox$CV$index["min", ]
+    cindex_df <- as.data.frame(cbind(cindex, cindex_se, cindex_active_genes, lambda, measure, cindex_index))
+    write.csv(cindex_df, paste0("Outputs/mirna/glmnet_", gn, "_genes_glmnet_index_", cindex_index, "_lambda_", lambda, "_mirnas_", mirnas, "_targets_", mirna_genes, ".csv"))
+    counter <- counter + 1
+  }
+}
+```
+
+```{r loading in all mirna outputs for small size and finding performance}
+# Now seeing what the best c-index is
+read_files <- function(folder_path, pattern) {
+  # Get a list of all files in the folder that match the pattern
+  file_list <- list.files(path = folder_path, pattern = pattern, full.names = TRUE)
+
+  # Read in all CSV files and combine into a single dataframe
+  data <- do.call(rbind, lapply(file_list, read.csv))
+
+  return(data)
+}
+
+all_mirna_cindices <- read_files(folder_path = "Outputs/mirna/glmnet/", pattern = "*.csv")
+max_mirna_cindex <- all_mirna_cindices[which.max(all_mirna_cindices$cindex), ] #  0.756 with 5 active genes
+```
+
+```{r barplot of the 3 individual metrics}
+all_individual_met_df <- bind_rows(max_mirna_cindex, max_sde_cindex, all_mad_cindices_sub[1, ])
+all_individual_met_df <- all_individual_met_df %>%
+  mutate(metric = c("mirna", "sde", "mad"))
+```
+
+```{r generate a cox model with just the cancer staging to see performance}
+scl_patient <- read.csv(
+  file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
+  sep = "\t"
+)
+
+scl_patient <- scl_patient %>%
+  slice(5:121) %>%
+  rename(
+    Patient.ID = X.Patient.Identifier, Overall.Survival.Status = Overall.Survival.Status,
+    Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker
+  ) %>%
+  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Smoker, Sex, Ethnicity.Category, N.Stage, M.Stage, UICC.Tumor.Stage, Chemotherapy, Neoadjuvant.Chemotherapy) %>%
+  filter(Smoker != "Never") %>%
+  filter(Smoker != "") %>%
+  mutate(
+    Smoker = as.factor(Smoker),
+    Smoker = if_else(Smoker == "Current", true = 1, false = 0)
+  ) %>%
+  mutate(Overall.Survival.Status = ifelse(Overall.Survival.Status == "1:DECEASED", 1, 0)) %>%
+  rename(
+    vital.status = Overall.Survival.Status,
+    time = Overall.Survival.Months.
+  ) %>%
+  mutate(Patient.ID = gsub(
+    x = Patient.ID,
+    pattern = "sclc_ucologne_2015_S",
+    replacement = ""
+  )) %>%
+  mutate(vital.status_new = as.numeric(vital.status)) %>%
+  mutate(time_new = as.numeric(time)) %>%
+  select(-vital.status, -time) %>%
+  rename(
+    vital.status = vital.status_new,
+    time = time_new
+  ) %>%
+  mutate(time = time * 30) %>%
+  filter(time != 0) %>%
+  rename_all(tolower)
+
+scl_clinical_only <- scl_patient %>%
+  mutate(n.stage = ifelse(n.stage == "", NA, n.stage)) %>%
+  mutate(m.stage = ifelse(m.stage == "", NA, m.stage)) %>%
+  filter(!is.na(ethnicity.category) & !is.na(n.stage) & !is.na(m.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ia", 1, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "I", 1, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ib", 1, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IB", 1, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIa", 3, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IV", 4, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "iib", 2, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "iia", 2, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "iiia", 3, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "iiib", 3, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIa", 3, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIb", 3, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIa", 2, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIb", 2, uicc.tumor.stage)) %>%
+  mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "II", 2, uicc.tumor.stage)) %>%
+  mutate(n.stage = ifelse(n.stage == "1a", 1, n.stage)) %>%
+  mutate(n.stage = ifelse(n.stage == "1b", 1, n.stage)) %>%
+  mutate(n.stage = ifelse(n.stage == "X", "x", n.stage)) %>%
+  mutate(m.stage = ifelse(m.stage == "1a", 1, m.stage)) %>%
+  mutate(m.stage = ifelse(m.stage == "1b", 1, m.stage))
+
+surv_y <- Surv(time = scl_clinical_only$time, event = scl_clinical_only$vital.status, type = "right")
+clinical_cox_only <- coxph(data = scl_clinical_only, formula = surv_y ~ n.stage + m.stage + uicc.tumor.stage)
+summary_clinical <- summary(clinical_cox_only)
+clinical_staging_only_cindex <- round(as.numeric(as.vector(summary_clinical$concordance["C"])), digits = 4) # 0.6205 with 9 active predictors
+clinical_staging_only_cindex_se <- round(as.numeric(as.vector(summary_clinical$concordance["se(C)"])), digits = 4)
+
+clinical_staging_only_df <- data.frame(X = 1, cindex = clinical_staging_only_cindex, cindex_se = clinical_staging_only_cindex_se, cindex_active_genes = 9, lambda = NA, measure = "Concordance-index", cindex_index = NA, metric = "clinical_staging")
+# Adding staging c-index to df of other individual metrics
+all_individual_met_df <- bind_rows(all_individual_met_df, clinical_staging_only_df)
+```
+
+
+```{r random gene selection}
+scl_common <- scl_common %>%
+  select(
+    -patient.id, -sex, -smoker, -vital.status, -time, -n.stage, -m.stage,
+    -uicc.tumor.stage, -chemotherapy, -neoadjuvant.chemotherapy
+  )
+
+# Function to randomly sample genes from the dataset
+sample_genes <- function(df, n_genes, n_samples = 1000) {
+  gene_names <- colnames(df)
+  n_genes <- min(n_genes, length(gene_names))
+  samples <- lapply(1:n_samples, function(x) {
+    df %>%
+      select(sample(gene_names, n_genes, replace = FALSE)) %>%
+      rename_all(tolower)
+  })
+  return(samples)
+}
+
+
+set.seed(123)
+sampled_genes <- sample_genes(df = scl_common, n_genes = 7, n_samples = 1000)
+
+# Re-loading the scl file so that we can include the meta data
+scl_patient <- read.csv(
+  file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
+  sep = "\t"
+)
+
+scl_patient <- scl_patient %>%
+  slice(5:121) %>%
+  rename(
+    Patient.ID = X.Patient.Identifier, Overall.Survival.Status = Overall.Survival.Status,
+    Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker
+  ) %>%
+  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Smoker, Sex) %>%
+  filter(Smoker != "Never") %>%
+  filter(Smoker != "") %>%
+  mutate(
+    Smoker = as.factor(Smoker),
+    Smoker = if_else(Smoker == "Current", true = 1, false = 0)
+  ) %>%
+  mutate(Overall.Survival.Status = ifelse(Overall.Survival.Status == "1:DECEASED", 1, 0)) %>%
+  rename(
+    vital.status = Overall.Survival.Status,
+    time = Overall.Survival.Months.
+  ) %>%
+  mutate(Patient.ID = gsub(
+    x = Patient.ID,
+    pattern = "sclc_ucologne_2015_S",
+    replacement = ""
+  )) %>%
+  mutate(vital.status_new = as.numeric(vital.status)) %>%
+  mutate(time_new = as.numeric(time)) %>%
+  select(-vital.status, -time) %>%
+  rename(
+    vital.status = vital.status_new,
+    time = time_new
+  ) %>%
+  mutate(time = time * 30) %>%
+  filter(time != 0) %>%
+  rename_all(tolower)
+
+
+# Extract the list of gene symbols
+scl_genes <- scl_df$Hugo_Symbol
+
+# Find the list of patients that have data for both gene expression and clinical data
+common_patients <- intersect(scl_patient$patient.id, colnames(scl_df))
+
+# Select only the common columns from gene expression data and transpose it
+# so that each row corresponds to a patient
+scl_common <- scl_df %>%
+  select(all_of(common_patients)) %>%
+  t() %>%
+  as.data.frame()
+
+# Assign the gene symbols as column names
+colnames(scl_common) <- scl_genes
+
+# Remove duplicated columns and add patient ID as a column
+scl_common <- scl_common %>%
+  select(-which(duplicated(names(.)))) %>%
+  rownames_to_column(var = "patient.id")
+
+# Join the gene expression data with the clinical data for each patient
+scl_common <- left_join(scl_common, scl_patient[, c(
+  "vital.status", "time",
+  "patient.id"
+)],
+by = "patient.id"
+) %>%
+  rename_all(tolower) %>%
+  select(
+    patient.id, vital.status, time, everything()
+  )
+
+
+counter <- 1
+cox_outputs <- list()
+for (g in sampled_genes) {
+  current_genes <- g
+  current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 1, cox_predictors = current_genes, cox_df = scl_common, gene_num = 7, n_folds = 10, calc_auc = FALSE, save_coefs = FALSE, verbose = FALSE, cat_preds = FALSE)
+  cox_outputs[[counter]] <- current_cox
+
+  if (is.null(current_cox)) {
+    next
+  } else {
+    cindex <- round(current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)], digits = 4)
+    cindex_active_genes <- as.numeric(as.vector(current_cox$CV$nzero[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]))
+    lambda <- current_cox$CV$lambda.min
+    measure <- "Concordance-index"
+    cindex_se <- round(as.numeric(current_cox$CV$cvsd[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]), digits = 4)
+    cindex_index <- current_cox$CV$index["min", ]
+    cindex_df <- as.data.frame(cbind(cindex, cindex_se, cindex_active_genes, lambda, measure, cindex_index))
+    write.csv(cindex_df, paste0("Outputs/glmnet_cindices/random_genes/glmnet_7_genes_glmnet_index_", cindex_index, "_lambda_", lambda, ".csv"))
+    counter <- counter + 1
+  }
+}
+
+
+# Combining all files together
+all_random_cindices <- read_files(folder_path = "Outputs/glmnet_cindices/random_genes/", pattern = "*.csv")
+mean_random_cindices <- mean(all_random_cindices$cindex) # 0.606116
+random_genes_only_df <- data.frame(X = 1, cindex = mean_random_cindices, cindex_se = NA, cindex_active_genes = NA, lambda = NA, measure = "Concordance-index", cindex_index = NA, metric = "random_genes")
+# Adding staging c-index to df of other individual metrics
+all_individual_met_df <- bind_rows(all_individual_met_df, random_genes_only_df)
+```
 
 ```{r mirna}
 # Load the data
@@ -339,9 +668,255 @@ mirna_data <- mirna_data %>%
 # Now sending those miRNAs to TargetScan
 mirna_num <- seq(100, 800, 100)
 mirna_target_num <- seq(2, 8, 1)
-for (m in mirna_num[6:8]) {
-  for (t in mirna_target_num[1:7]){
-    mirna_genes <- mirna_calculator(ts_org = "Human", ts_version = "8.0", max_mir_targets = t, cancer_up = TRUE, cancer_type1 = "lung cancer", print_ts_targets = FALSE, max_mirnas = m, mirna_genes_mat_name = paste0("Outputs/increased_mirna_targets/mirna_genes_mat_", m, "_mirnas_", t, "_targets_up.rds"), mirna_ranking_name = paste0("Outputs/increased_mirna_targets/mirna_genes_", m, "_mirnas_", t, "_targets_up.rds"))
+# mirna_target_num <- seq(100, 5000, 200)
+# mirna_target_num <- seq(1, 100, 1)
+for (m in mirna_num[1:4]) {
+  for (t in mirna_target_num[1:7]) {
+    mirna_genes <- mirna_calculator(ts_org = "Human", ts_version = "8.0", max_mir_targets = t, cancer_up = TRUE, cancer_type1 = "lung cancer", print_ts_targets = FALSE, status = "up", max_mirnas = m, mirna_genes_mat_name = paste0("Outputs/mirna/mirna_genes_mat_", m, "_mirnas_", t, "_targets_up.csv"), mirna_ranking_name = paste0("Outputs/mirna/mirna_genes_", m, "_mirnas_", t, "_targets_up_.csv"), mirna_ranking_name_rds = paste0("Outputs/mirna/mirna_genes_", m, "_mirnas_", t, "_targets_up_.rds"), mirna_genes_mat_name_rds = paste0("Outputs/mirna/mirna_genes_mat_", m, "_mirnas_", t, "_targets_up.rds"))
   }
 }
+```
+
+
+
+
+```{r cox model for different miRNA data from increased miRNA}
+file_list <- list.files(path = "Outputs/increased_mirna_targets", pattern = "*.rds", full.names = TRUE)
+gene_sizes <- seq(2, 100, 1)
+cox_outputs <- list()
+counter <- 1
+for (f in file_list) {
+  for (gn in gene_sizes) {
+    current_mirna_met <- readRDS(paste0(f))
+    current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 1, cox_predictors = current_mirna_met, cox_df = scl_common, gene_num = gn, n_folds = 10, calc_auc = FALSE, save_coefs = FALSE, verbose = FALSE, cat_preds = FALSE)
+    cox_outputs[[counter]] <- current_cox
+    mirna_genes <- str_extract(f, "(?<=mirna_genes_)\\d+")
+    mirnas <- str_extract(f, "(?<=mirnas_)\\d+")
+    cindex <- round(current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)], digits = 4)
+    cindex_active_genes <- as.numeric(as.vector(current_cox$CV$nzero[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]))
+    lambda <- current_cox$CV$lambda.min
+    measure <- "Concordance-index"
+    cindex_se <- round(as.numeric(current_cox$CV$cvsd[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]), digits = 4)
+    cindex_index <- current_cox$CV$index["min", ]
+    cindex_df <- as.data.frame(cbind(cindex, cindex_se, cindex_active_genes, lambda, measure, cindex_index))
+    write.csv(cindex_df, paste0("Outputs/glmnet_cindices/100_targets/glmnet_", gn, "_genes_glmnet_index_", cindex_index, "_lambda_", lambda, "_mirnas_", mirnas, "_targets_", mirna_genes, ".csv"))
+    counter <- counter + 1
+  }
+}
+```
+
+
+```{r}
+# Function to read and combine many files
+function(folder_path, pattern) {
+  # Get a list of all files in the folder that match the pattern
+  file_list <- list.files(path = folder_path, pattern = pattern, full.names = TRUE)
+
+  # Read in all CSV files and combine into a single dataframe
+  data <- do.call(rbind, lapply(file_list, read.csv))
+
+  return(data)
+}
+
+all_mirna_glmnet <- read_files(folder_path = "Outputs/glmnet_cindices/100_targets/", pattern = "*.csv")
+```
+
+
+
+```{r larger number of targets for up regulated miRNA}
+file_list <- list.files(path = "Outputs/increased_mirna_targets/metrics/5000_targets", pattern = "5000_targets.rds", full.names = TRUE)
+gene_sizes <- seq(1, 5000, 200)
+cox_outputs <- list()
+counter <- 1
+for (f in file_list) {
+  for (gn in gene_sizes) {
+    current_mirna_met <- readRDS(paste0(f))
+    current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 1, cox_predictors = current_mirna_met, cox_df = scl_common, gene_num = gn, n_folds = 10, calc_auc = FALSE, save_coefs = FALSE, verbose = FALSE, cat_preds = FALSE)
+    cox_outputs[[counter]] <- current_cox
+    mirna_genes <- str_extract(f, "(?<=mirna_genes_)\\d+")
+    mirnas <- str_extract(f, "(?<=mirnas_)\\d+")
+    cindex <- round(current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)], digits = 4)
+    cindex_active_genes <- as.numeric(as.vector(current_cox$CV$nzero[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]))
+    lambda <- current_cox$CV$lambda.min
+    measure <- "Concordance-index"
+    cindex_se <- round(as.numeric(current_cox$CV$cvsd[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]), digits = 4)
+    cindex_index <- current_cox$CV$index["min", ]
+    cindex_df <- as.data.frame(cbind(cindex, cindex_se, cindex_active_genes, lambda, measure, cindex_index))
+    write.csv(cindex_df, paste0("Outputs/glmnet_cindices/5000_targets/glmnet_", gn, "_genes_glmnet_index_", cindex_index, "_lambda_", lambda, "_mirnas_", mirnas, "_targets_", mirna_genes, ".csv"))
+    counter <- counter + 1
+  }
+}
+```
+
+```{r looking to see what kind of performance we have}
+all_cindices <- read_files(folder_path = "Outputs/glmnet_cindices/5000_targets/", pattern = "*.csv")
+```
+
+
+
+```{r cox model for different miRNA data from decreased miRNA}
+file_list <- list.files(path = "Outputs/decreased_mirna_targets/metrics/", pattern = "*.rds", full.names = TRUE)
+gene_sizes <- seq(1, 10, 1)
+cox_outputs <- list()
+counter <- 1
+for (f in file_list) {
+  for (gn in gene_sizes) {
+    current_mirna_met <- readRDS(paste0(f))
+    current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 1, cox_predictors = current_mirna_met, cox_df = scl_common, gene_num = gn, n_folds = 10, calc_auc = FALSE, save_coefs = FALSE, verbose = FALSE, cat_preds = FALSE)
+    cox_outputs[[counter]] <- current_cox
+    counter <- counter + 1
+  }
+}
+
+cox_outputs <- cox_outputs[!sapply(cox_outputs, is.null)]
+cindices <- c()
+num_of_active_genes <- c()
+for (c in 1:length(cox_outputs)) {
+  current_cox <- cox_outputs[[c]]
+  cindices <- c(cindices, current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)])
+  num_of_active_genes <- c(num_of_active_genes, length(current_cox$`Active Genes`))
+}
+
+df <- as.data.frame(cbind(cindices, num_of_active_genes))
+write.csv(df, "Outputs/decreased_mirna_targets/cindex_performance.csv")
+```
+
+```{r check how SDE performs across gene size}
+# gene_sizes <- seq(1, 4000, 20)
+gene_sizes <- seq(1, 20, 1)
+
+for (gs in gene_sizes) {
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 1,
+    cox_predictors = mad_genes,
+    cox_df = scl_common,
+    gene_num = gs,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE
+  )
+  cindex <- current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]
+  write.csv(cindex, paste0("Outputs/glmnet_cindices/cindex_", gs, "_20_max_genes_sde.csv"))
+}
+```
+
+
+```{r MAD across gene sizes}
+# gene_sizes <- seq(1, 4000, 20)
+gene_sizes <- seq(1, 20, 1)
+# gene_sizes <- seq(1, 15, 1)
+
+for (gs in gene_sizes) {
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 1,
+    cox_predictors = mad_genes,
+    cox_df = scl_common,
+    gene_num = gs,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE
+  )
+  cindex <- current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]
+  write.csv(cindex, paste0("Outputs/glmnet_cindices/cindex_", gs, "_20_max_genes.csv"))
+}
+```
+
+```{r mad + sde}
+mad_sde_optimized <- two_weight_optimizer(
+  first.metric = mad_genes,
+  second.metric = sde_genes,
+  my.start = 0,
+  my.finish = 1,
+  step.size = 0.1,
+  my.filename = paste0("Outputs/Optimization_mad_sde_1_alpha.rds")
+)
+
+for (ms in mad_sde_optimized) {
+  for (gs in gene_sizes) {
+    current_cox <- cox_model_fitter(
+      my_seed = 1,
+      my_alpha = 1,
+      cox_predictors = ms,
+      cox_df = scl_common,
+      gene_num = gs,
+      save_coefs = FALSE,
+      tumor_stage = FALSE,
+      tumor_n = FALSE,
+      tumor_m = FALSE,
+      calc_auc = FALSE,
+      cat_preds = FALSE,
+      n_folds = 10
+    )
+    cindex <- current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]
+    write.csv(cindex, paste0("Outputs/glmnet_cindices/cindex_", gs, "_mad_sde_optimized.csv"))
+  }
+}
+```
+
+
+```{r mirna sde}
+mirna_sde_optimized <- two_weight_optimizer(
+  first.metric = mirna_genes,
+  second.metric = sde_genes,
+  my.start = 0,
+  my.finish = 1,
+  step.size = 0.1,
+  my.filename = paste0("Outputs/Optimization_mirna_sde_1_alpha.rds")
+)
+
+for (ms in mirna_sde_optimized) {
+  for (gs in gene_sizes) {
+    current_cox <- cox_model_fitter(
+      my_seed = 1,
+      my_alpha = 1,
+      cox_predictors = ms,
+      cox_df = scl_common,
+      gene_num = gs,
+      save_coefs = FALSE,
+      tumor_stage = FALSE,
+      tumor_n = FALSE,
+      tumor_m = FALSE,
+      calc_auc = FALSE,
+      cat_preds = FALSE,
+      n_folds = 10
+    )
+    cindex <- current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]
+    write.csv(cindex, paste0("Outputs/glmnet_cindices/cindex_", gs, "_mirna_sde_optimized.csv"))
+  }
+}
+```
+
+
+
+```{r emt genes only}
+emt_genes <- read.csv("Data/emt_genes_tian.txt", sep = "\t")
+gene_sizes <- seq(1, 3000, 20)
+cox_outputs <- list()
+counter <- 1
+
+for (gs in gene_sizes) {
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0.5,
+    cox_predictors = emt_genes$Gene[1:gs],
+    cox_df = scl_common,
+    gene_num = gs,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+  cindices <- c(cindices, current_cox$CV$cvm[which(current_cox$CV$lambda == current_cox$CV$lambda.min)])
+  num_of_active_genes <- c(num_of_active_genes, length(current_cox$`Active Genes`))
+}
+
+df <- as.data.frame(cbind(cindices, num_of_active_genes))
+write.csv(df, "Outputs/emt_genes_only_cindex_performance.csv")
 ```

@@ -69,51 +69,49 @@ cox_model_fitter <- function(my_seed = 1,
 
   # Making the list that will store the
   # data we will return
-  cox_data <- vector(mode = "list", length = 6)
+  cox_data <- list()
 
 
-  if (cat_preds == TRUE) {
-    cox_predictors <- as.numeric(cox_predictors)
-    my_predictors <- cox_predictors
-    my_predictors <- paste("~", paste(my_predictors[1:length(my_predictors)],
-      collapse = "+"
-    ))
-    my_x <- my_predictors
-  } else {
-    # The predictors for the cox model. For the SCLC we are defaulting to
-    # as.character
+
+  if (is.numeric(cox_predictors)) {
     my_predictors <- cox_predictors
     my_predictors <- head(my_predictors, n = gene_num)
-    my_predictors <- sapply(my_predictors, gsub, pattern = "-", replacement = ".")
-    my_predictors <- unlist(my_predictors)
-    colname_changes <- sapply(colnames(cox_df), gsub,
-      pattern = "-", replacement = "."
-    )
-    colname_changes <- sapply(colnames(cox_df), gsub,
-      pattern = "_", replacement = "."
-    )
-    colname_changes <- sapply(colnames(cox_df), gsub,
-      pattern = "/", replacement = "."
-    )
-    colname_changes <- unlist(colname_changes)
-    colnames(cox_df) <- colname_changes
+    my_predictors <- names(my_predictors)
+    my_predictors <- tolower(my_predictors)
     my_predictors <- intersect(my_predictors, colnames(cox_df))
-    my_predictors <- paste("~", paste(my_predictors[1:length(my_predictors)],
+    my_predictors <- my_predictors[my_predictors != "krtap19"]
+  }
+
+  if (is.data.frame(cox_predictors)) {
+    my_predictors <- cox_predictors
+    my_predictors <- names(my_predictors)
+    my_predictors <- tolower(my_predictors)
+    my_predictors <- intersect(my_predictors, colnames(cox_df))
+    my_predictors <- my_predictors[my_predictors != "krtap19"]
+  }
+
+
+  if (length(my_predictors) == 0) {
+    print("No common predictors")
+    return(NULL)
+  } else {
+    my_predictors <- paste0("~", paste0(make.names(my_predictors)[1:length(my_predictors)],
       collapse = "+"
     ))
+    colnames(cox_df) <- make.names(colnames(cox_df))
   }
 
 
 
 
   if (tumor_stage == TRUE && tumor_n == FALSE && tumor_m == FALSE) {
-    my_predictors <- paste(my_predictors, "tumor.stage", sep = "+")
+    my_predictors <- paste0(my_predictors, "tumor.stage", sep = "+")
     my_predictors <- as.formula(my_predictors)
   } else if (tumor_stage == TRUE && tumor_n == TRUE && tumor_m == FALSE) {
-    my_predictors <- paste(my_predictors, "ajcc.n", sep = "+")
+    my_predictors <- paste0(my_predictors, "ajcc.n", sep = "+")
     my_predictors <- as.formula(my_predictors)
   } else if (tumor_stage == TRUE && tumor_n == TRUE && tumor_m == TRUE) {
-    my_predictors <- paste(my_predictors, "ajcc.m", sep = "+")
+    my_predictors <- paste0(my_predictors, "ajcc.m", sep = "+")
     my_predictors <- as.formula(my_predictors)
   } else {
     my_predictors <- as.formula(my_predictors)
