@@ -5,6 +5,7 @@
 cox_model_fitter <- function(my_seed = 1,
                              my_alpha = 1,
                              cox_df = NULL,
+                             sim_testing = FALSE,
                              gene_num = 1800,
                              max_it = 100000,
                              verbose = FALSE,
@@ -84,10 +85,11 @@ cox_model_fitter <- function(my_seed = 1,
 
   if (is.data.frame(cox_predictors)) {
     my_predictors <- cox_predictors
-    my_predictors <- names(my_predictors)
+    my_predictors <- rownames(my_predictors)
     my_predictors <- tolower(my_predictors)
     my_predictors <- intersect(my_predictors, colnames(cox_df))
     my_predictors <- my_predictors[my_predictors != "krtap19"]
+    my_predictors <- my_predictors[1:gene_num]
   }
 
 
@@ -129,15 +131,22 @@ cox_model_fitter <- function(my_seed = 1,
     event = cox_df$vital.status
   )
 
-
-
-  # The 10-fold cross-validation fit
-  cv_fit <- cv.glmnet(
-    x = my_x, y = my_y, nfolds = n_folds, type.measure = "C",
-    maxit = max_it, family = "cox", parallel = TRUE,
-    alpha = my_alpha, keep = TRUE
-  )
-
+  if (sim_testing) {
+    # The 10-fold cross-validation fit with alpha set to 0 to be vanilla Cox model
+    # with no regularization
+    cv_fit <- cv.glmnet(
+      x = my_x, y = my_y, nfolds = n_folds, type.measure = "C",
+      maxit = max_it, family = "cox", parallel = TRUE,
+      alpha = 0, keep = TRUE
+    )
+  } else {
+    # The 10-fold cross-validation fit
+    cv_fit <- cv.glmnet(
+      x = my_x, y = my_y, nfolds = n_folds, type.measure = "C",
+      maxit = max_it, family = "cox", parallel = TRUE,
+      alpha = my_alpha, keep = TRUE
+    )
+  }
 
 
   # Looking to see which genes are the most important
