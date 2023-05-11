@@ -88,9 +88,9 @@ scl_patient <- scl_patient %>%
   slice(5:121) %>%
   rename(
     Patient.ID = X.Patient.Identifier, Overall.Survival.Status = Overall.Survival.Status,
-    Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker
+    Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker, Progress.Free.Survival.Months. = Progress.Free.Survival..Months.
   ) %>%
-  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Smoker, Chemotherapy, Neoadjuvant.Chemotherapy, N.Stage, M.Stage, UICC.Tumor.Stage) %>%
+  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Progress.Free.Survival.Months., Smoker, Chemotherapy, Neoadjuvant.Chemotherapy, N.Stage, M.Stage, UICC.Tumor.Stage) %>%
   filter(Smoker != "Never") %>%
   filter(Smoker != "") %>%
   mutate(
@@ -116,13 +116,21 @@ scl_patient <- scl_patient %>%
   ) %>%
   mutate(time = time * 30) %>%
   filter(time != 0) %>%
-  rename_all(tolower)
+  mutate(Progress.Free.Survival.Months. = ifelse(Progress.Free.Survival.Months. == "", NA, Progress.Free.Survival.Months.)) %>%
+  rename_all(tolower) %>%
+  # Uncomment this line for the non-progress free analysis
+  filter(!is.na(progress.free.survival.months.)) %>%
+  rename(time2 = progress.free.survival.months.) %>%
+  mutate(time2 = as.numeric(time2)) %>%
+  mutate(time2 = time2 * 30)
+
 
 # Extract the list of gene symbols
 scl_genes <- scl_df$Hugo_Symbol
 
 # Find the list of patients that have data for both gene expression and clinical data
 common_patients <- intersect(scl_patient$patient.id, colnames(scl_df))
+
 
 # Select only the common columns from gene expression data and transpose it
 # so that each row corresponds to a patient
@@ -142,7 +150,7 @@ scl_common <- scl_common %>%
 # Join the gene expression data with the clinical data for each patient
 scl_common <- left_join(scl_common, scl_patient[, c(
   "sex", "smoker",
-  "vital.status", "time",
+  "vital.status", "time", "time2",
   "patient.id", "n.stage", "m.stage", "uicc.tumor.stage",
   "chemotherapy", "neoadjuvant.chemotherapy"
 )],
@@ -150,7 +158,7 @@ by = "patient.id"
 ) %>%
   rename_all(tolower) %>%
   select(
-    patient.id, sex, smoker, vital.status, time, n.stage, m.stage,
+    patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
     uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, everything()
   )
 
@@ -901,10 +909,9 @@ all_mirna_mad_sde_cindices <- read_files(folder_path = "Outputs/glmnet_cindices/
 max_mirna_mad_sde_cindices <- all_mirna_mad_sde_cindices[which.max(all_mirna_mad_sde_cindices$cindex), ] # 0.76910 with 6 active predictors
 ```
 
-
 # KM Plot. Unbalanced dataset. Will need to work on this more as we currently have problems
 ```{r risk seperation}
-risk_genes <- data.frame(gene = c("tfrc","fam83f","samd12","grin2b","dlk1","gng13"), coef = c(-0.75737985824054,-0.0706471525401676,-0.16554139965723,0.305795111401098,-0.000374799303479439,-0.027261204056091))
+risk_genes <- data.frame(gene = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"), coef = c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091))
 
 write.csv(risk_genes, "Outputs/mirna_mad_sde_coefs.csv")
 
@@ -965,7 +972,7 @@ bootstrap_datasets <- replicate(1000,
 ```{r for 1000 simulations of 10 fold cv on mirna + mad + sde}
 cox_outputs <- list()
 counter <- 1
-cox_preds <- data.frame(preds = c())
+cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"))
 rownames(cox_preds) <- cox_preds$preds
 for (d in 1:length(bootstrap_datasets)) {
   current_dataset <- bootstrap_datasets[[d]]
@@ -1106,32 +1113,29 @@ mean_performance <- mean(cv_performance) # 0.6920965 with the 5 active predictor
 # miRNA + SDE on 1000 simulated datasets
 ```{r mirna + sde 1000}
 cox_outputs <- list()
-cox_preds <- data.frame(preds = c("znf460","tfrc","fam83f","samd12","grin2b"))
+cox_preds <- data.frame(preds = c("znf460", "tfrc", "fam83f", "samd12", "grin2b"))
 rownames(cox_preds) <- cox_preds$preds
 counter <- 1
 for (d in 1:length(bootstrap_datasets)) {
   current_dataset <- bootstrap_datasets[[d]]
-  for (ms in mirna_sde_optimized) {
-    cox_preds <- ms
-    current_cox <- cox_model_fitter(
-      my_seed = 1,
-      my_alpha = 0,
-      sim_testing = TRUE,
-      cox_predictors = cox_preds,
-      cox_df = current_dataset,
-      gene_num = 5,
-      save_coefs = FALSE,
-      tumor_stage = FALSE,
-      tumor_n = FALSE,
-      tumor_m = FALSE,
-      calc_auc = FALSE,
-      cat_preds = FALSE,
-      n_folds = 10
-    )
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 5,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
 
-    cox_outputs[[counter]] <- current_cox
-    counter <- counter + 1
-  }
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
 }
 
 
@@ -1139,8 +1143,574 @@ for (d in 1:length(bootstrap_datasets)) {
 cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
 
 # calculate the mean performance across all folds
-mean_performance <- mean(cv_performance) # 0.X with the 5 active predictors from miRNA + SDE
+mean_performance <- mean(cv_performance) # 0.6907635 with the 5 active predictors from miRNA + SDE
 ```
+
+# miRNA + MAD on 1000 simulated datasets
+```{r mirna + mad 1000}
+cox_outputs <- list()
+cox_preds <- data.frame(preds = c("znf460", "tfrc", "fam83f", "samd12", "grin2b"))
+rownames(cox_preds) <- cox_preds$preds
+counter <- 1
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 5,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.6907635 with the 5 active predictors from miRNA + MAD
+```
+
+# MAD + SDE on 1000 simulated datasets
+```{r mad + sde 1000}
+cox_outputs <- list()
+cox_preds <- data.frame(preds = c("dlk1", "arl6ip1", "ube2c"))
+rownames(cox_preds) <- cox_preds$preds
+counter <- 1
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 3,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.6958149 with the 3 active predictors from MAD + SDE
+```
+
+# Random Genes on 1000 simulated datasets
+```{r random genes 1000}
+scl_common <- scl_common %>%
+  select(
+    -patient.id, -sex, -smoker, -vital.status, -time, -n.stage, -m.stage,
+    -uicc.tumor.stage, -chemotherapy, -neoadjuvant.chemotherapy
+  )
+
+# Function to randomly sample genes from the dataset
+sample_genes <- function(df, n_genes, n_samples = 1000) {
+  gene_names <- colnames(df)
+  n_genes <- min(n_genes, length(gene_names))
+  samples <- lapply(1:n_samples, function(x) {
+    df %>%
+      select(sample(gene_names, n_genes, replace = FALSE)) %>%
+      rename_all(tolower)
+  })
+  return(samples)
+}
+
+
+set.seed(123)
+sampled_genes <- sample_genes(df = scl_common, n_genes = 7, n_samples = 1000)
+
+# Re-loading the scl file so that we can include the meta data
+scl_patient <- read.csv(
+  file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
+  sep = "\t"
+)
+
+scl_patient <- scl_patient %>%
+  slice(5:121) %>%
+  rename(
+    Patient.ID = X.Patient.Identifier, Overall.Survival.Status = Overall.Survival.Status,
+    Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker
+  ) %>%
+  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Smoker, Sex) %>%
+  filter(Smoker != "Never") %>%
+  filter(Smoker != "") %>%
+  mutate(
+    Smoker = as.factor(Smoker),
+    Smoker = if_else(Smoker == "Current", true = 1, false = 0)
+  ) %>%
+  mutate(Overall.Survival.Status = ifelse(Overall.Survival.Status == "1:DECEASED", 1, 0)) %>%
+  rename(
+    vital.status = Overall.Survival.Status,
+    time = Overall.Survival.Months.
+  ) %>%
+  mutate(Patient.ID = gsub(
+    x = Patient.ID,
+    pattern = "sclc_ucologne_2015_S",
+    replacement = ""
+  )) %>%
+  mutate(vital.status_new = as.numeric(vital.status)) %>%
+  mutate(time_new = as.numeric(time)) %>%
+  select(-vital.status, -time) %>%
+  rename(
+    vital.status = vital.status_new,
+    time = time_new
+  ) %>%
+  mutate(time = time * 30) %>%
+  filter(time != 0) %>%
+  rename_all(tolower)
+
+
+scl_df <- read.csv(
+  file = "Data/sclc_ucologne_2015/data_mrna_seq_rpkm.txt",
+  sep = "\t"
+)
+
+scl_df <- subset(scl_df,
+  select = c(Hugo_Symbol, sclc_ucologne_2015_S00022:sclc_ucologne_2015_S02397)
+)
+
+# Clean up column names by removing prefix
+colnames(scl_df) <- sub("^sclc_ucologne_2015_S", "", colnames(scl_df))
+
+# Extract the list of gene symbols
+scl_genes <- scl_df$Hugo_Symbol
+
+# Find the list of patients that have data for both gene expression and clinical data
+common_patients <- intersect(scl_patient$patient.id, colnames(scl_df))
+
+# Select only the common columns from gene expression data and transpose it
+# so that each row corresponds to a patient
+scl_common <- scl_df %>%
+  select(all_of(common_patients)) %>%
+  t() %>%
+  as.data.frame()
+
+# Assign the gene symbols as column names
+colnames(scl_common) <- scl_genes
+
+# Remove duplicated columns and add patient ID as a column
+scl_common <- scl_common %>%
+  select(-which(duplicated(names(.)))) %>%
+  rownames_to_column(var = "patient.id")
+
+# Join the gene expression data with the clinical data for each patient
+scl_common <- left_join(scl_common, scl_patient[, c(
+  "vital.status", "time",
+  "patient.id"
+)],
+by = "patient.id"
+) %>%
+  rename_all(tolower) %>%
+  select(
+    patient.id, vital.status, time, everything()
+  )
+
+
+counter <- 1
+cox_outputs <- list()
+for (g in sampled_genes) {
+  current_genes <- g
+  current_genes <- colnames(current_genes)
+  for (d in 1:length(bootstrap_datasets)) {
+    current_dataset <- bootstrap_datasets[[d]]
+    current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 0,
+                                    cox_predictors = current_genes, 
+                                    cox_df = current_dataset, 
+                                    gene_num = 7, 
+                                    n_folds = 10, 
+                                    calc_auc = FALSE,
+                                    save_coefs = FALSE,
+                                    verbose = FALSE,
+                                    cat_preds = FALSE)
+    cox_outputs[[counter]] <- current_cox
+
+    if (is.null(current_cox)) {
+      next
+    } else {
+      counter <- counter + 1
+    }
+  }
+}
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.X with the 7 active predictors from random genes
+```
+
+# Plot for individual metrics for overall survival with initial dataset perforamnce
+```{r combining all overall survival cindicies together for first panel}
+all_individual_met_df <- read.csv("Outputs/all_individual_metrics_cindex.csv")
+mirna_mad_only_df <- data.frame(X = 1, cindex = 0.7559976, cindex_se = NA, cindex_active_genes = 5, lambda = NA, measure = "Concordance-index", cindex_index = NA, metric = "mirna_mad")
+all_individual_met_df <- bind_rows(all_individual_met_df, mirna_mad_only_df)
+mirna_mad_sde_only_df <- data.frame(X = 1, cindex = 0.76910, se = NA, cindex_active_genes = 6, lambda = NA, measure = "Concordance-index", cindex_index = NA, metric = "mirna_mad_sde")
+all_individual_met_df <- bind_rows(all_individual_met_df, mirna_mad_sde_only_df)
+mirna_sde_only_df <- data.frame(X = 1, cindex = 0.7560, cindex_se = NA, cindex_active_genes = 5, lambda = NA, measure = "Concordance-index", cindex_index = NA, metric = "mirna_sde")
+all_individual_met_df <- bind_rows(all_individual_met_df, mirna_sde_only_df)
+mad_sde_only_df <- data.frame(X = 1, cindex = 0.7201824, cindex_se = NA, cindex_active_genes = 3, lambda = NA, measure = "Concordance-index", cindex_index = NA, metric = "mad_sde")
+all_individual_met_df <- bind_rows(all_individual_met_df, mad_sde_only_df)
+write.csv(all_individual_met_df, "Outputs/all_individual_metrics_cindex.csv")
+
+# Starting plotting code
+all_individual_metrics_cindex$metric <- factor(all_individual_metrics_cindex$metric, levels = c("mad", "sde", "mirna", "clinical_staging", "random_genes", "mad_sde", "mirna_mad", "mirna_sde", "mirna_mad_sde"), labels = c("M", "S", "miR", "CS", "RG", "MS", "miRM", "miRS", "miRMS"))
+
+all_individual_metrics_cindex <- all_individual_metrics_cindex %>%
+  select(cindex, metric) %>%
+  mutate(cindex = round(cindex, digits = 4))
+
+
+p1 <- ggplot(data = all_individual_metrics_cindex, aes(x = metric, y = cindex, fill = metric, color = metric)) +
+  geom_col(width = 0.4) +
+  geom_text(aes(label = round(cindex, 2), y = cindex + 0.01),
+    size = 4,
+    position = position_dodge(width = 0.4), color = "black"
+  ) +
+  theme(
+    panel.background = element_blank(),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, vjust = 0.7),
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.ticks.length = unit(0.2, units = "cm"),
+    legend.position = "none",
+    axis.ticks = element_line(color = "black", linewidth = 0.75)
+  ) +
+  xlab("Metric") +
+  ylab("Mean 10-fold CV C-index") +
+  ggtitle("Single Dataset | Overall Survival") +
+  scale_y_continuous(expand = c(0, 0))
+p1 <- p1 + coord_cartesian(ylim = c(0.5, 0.8)) +
+  scale_fill_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef")) +
+  scale_color_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef"))
+p1
+
+# Save to PNG
+ggsave(p1, device = "png", filename = "figure_a_panel_a.png", path = "Figures/panels/", width = 8, height = 8, dpi = 600, units = "in")
+
+# Save to SVG
+ggsave(p1, device = "svg", filename = "figure_a_panel_a.svg", path = "Figures/panels/", width = 8, height = 8, dpi = 600, units = "in")
+```
+
+# Plot for individual metrics for overall survival with 1,000 simulated datasets performance
+```{r combining all overall survival cindicies together for second panel}
+plot_df <- data.frame(metric = c("M", "S", "miR", "CS", "RG", "MS", "miRM", "miRS", "miRMS"), cindex = c(0.6212627, 0.6746058, 0.6920965, "0.X", "0.X", "0.6958149", "0.6907635", "0.6907635", "0.7204482"))
+
+p1 <- ggplot(data = plot_df, aes(x = metric, y = cindex, fill = metric, color = metric)) +
+  geom_col(width = 0.4) +
+  geom_text(aes(label = round(cindex, 2), y = cindex + 0.01),
+    size = 4,
+    position = position_dodge(width = 0.4), color = "black"
+  ) +
+  theme(
+    panel.background = element_blank(),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, vjust = 0.7),
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.ticks.length = unit(0.2, units = "cm"),
+    legend.position = "none",
+    axis.ticks = element_line(color = "black", linewidth = 0.75)
+  ) +
+  xlab("Metric") +
+  ylab("Mean 10-fold CV C-index") +
+  ggtitle("1000 Bootstrapped Datasets | Overall Survival") +
+  scale_y_continuous(expand = c(0, 0))
+p1 <- p1 + coord_cartesian(ylim = c(0.5, 0.8)) +
+  scale_fill_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef")) +
+  scale_color_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef"))
+p1
+
+# Save to PNG
+ggsave(p1, device = "png", filename = "figure_a_panel_b.png", path = "Figures/panels/", width = 8, height = 8, dpi = 600, units = "in")
+
+# Save to SVG
+ggsave(p1, device = "svg", filename = "figure_a_panel_b.svg", path = "Figures/panels/", width = 8, height = 8, dpi = 600, units = "in")
+```
+
+
+# Simulated datasets with progress free survival for the identified signatures
+# miRNA + MAD + SDE
+```{r mirna + mad + sde progress free}
+cox_outputs <- list()
+counter <- 1
+cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"))
+rownames(cox_preds) <- cox_preds$preds
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE, 
+    progress_free = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 6,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.7460983 with the 6 active perdictors from mad + sde + miRNA
+```
+
+```{r MAD progress free}
+cox_outputs <- list()
+counter <- 1
+mad_genes <- readRDS("Outputs/mad_genes.rds")
+cox_preds <- mad_genes
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE,
+    progress_free = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 6,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.7001656 with the 6 active predictors from MAD
+```
+
+# SDE
+```{r sde progress free}
+cox_outputs <- list()
+counter <- 1
+cox_preds <- sde_genes
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE, 
+    progress_free = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 7,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.749532 with the 7 active predictors from SDE
+```
+
+# miRNA
+```{r mirna progress free}
+cox_outputs <- list()
+counter <- 1
+mirna_genes <- readRDS("Outputs/mirna/rds/mirna_genes_200_mirnas_5_targets_up_.rds")
+cox_preds <- mirna_genes
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE, 
+    progress_free = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 5,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.7488896 with the 5 active predictors from miRNA
+```
+
+# miRNA + SDE
+```{r mirna + sde progress free}
+cox_outputs <- list()
+cox_preds <- data.frame(preds = c("znf460", "tfrc", "fam83f", "samd12", "grin2b"))
+rownames(cox_preds) <- cox_preds$preds
+counter <- 1
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE, 
+    progress_free = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 5,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.7463801 with the 5 active predictors from miRNA + SDE
+```
+
+# miRNA + MAD
+```{r mirna + mad progress free}
+cox_outputs <- list()
+cox_preds <- data.frame(preds = c("znf460", "tfrc", "fam83f", "samd12", "grin2b"))
+rownames(cox_preds) <- cox_preds$preds
+counter <- 1
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE,
+    progress_free = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 5,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.7463801 with the 5 active predictors from miRNA + MAD
+```
+
+# MAD + SDE
+```{r mad + sde progress free}
+cox_outputs <- list()
+cox_preds <- data.frame(preds = c("dlk1", "arl6ip1", "ube2c"))
+rownames(cox_preds) <- cox_preds$preds
+counter <- 1
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 3,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.732993 with the 3 active predictors from MAD + SDE
+```
+
 
 # Attempt to use permutation test to seperate high and low risk group
 ```{r now using permutation test to see if we have high and low risk separation}
