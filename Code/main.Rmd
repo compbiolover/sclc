@@ -40,7 +40,7 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 # viridis: for creating color palettes for data visualization that are perceptually uniform and easy to interpret
 
 pacman::p_load(
-  cowplot, data.table, devtools, ggplot2, glmnet, hoardeR, igraph, Matrix, monocle3, parallel, phateR,
+  cowplot, coxed, data.table, devtools, ggplot2, glmnet, hoardeR, igraph, Matrix, monocle3, parallel, phateR,
   reticulate, retry, Rmagic, styler, survival, survminer, svglite, switchde, tidyverse, viridis
 )
 ```
@@ -117,12 +117,12 @@ scl_patient <- scl_patient %>%
   mutate(time = time * 30) %>%
   filter(time != 0) %>%
   mutate(Progress.Free.Survival.Months. = ifelse(Progress.Free.Survival.Months. == "", NA, Progress.Free.Survival.Months.)) %>%
-  rename_all(tolower) %>%
+  rename_all(tolower)
   # Uncomment this line for the non-progress free analysis
-  filter(!is.na(progress.free.survival.months.)) %>%
-  rename(time2 = progress.free.survival.months.) %>%
-  mutate(time2 = as.numeric(time2)) %>%
-  mutate(time2 = time2 * 30)
+  # filter(!is.na(progress.free.survival.months.)) %>%
+  # rename(time2 = progress.free.survival.months.) %>%
+  # mutate(time2 = as.numeric(time2)) %>%
+  # mutate(time2 = time2 * 30)
 
 
 # Extract the list of gene symbols
@@ -150,7 +150,7 @@ scl_common <- scl_common %>%
 # Join the gene expression data with the clinical data for each patient
 scl_common <- left_join(scl_common, scl_patient[, c(
   "sex", "smoker",
-  "vital.status", "time", "time2",
+  "vital.status", "time",
   "patient.id", "n.stage", "m.stage", "uicc.tumor.stage",
   "chemotherapy", "neoadjuvant.chemotherapy"
 )],
@@ -158,7 +158,7 @@ by = "patient.id"
 ) %>%
   rename_all(tolower) %>%
   select(
-    patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
+    patient.id, sex, smoker, vital.status, time, n.stage, m.stage,
     uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, everything()
   )
 
@@ -930,7 +930,7 @@ km_plot$`KM Plot`
 # Attempting to generate several synthetic datasets based on our original survival distribution
 ```{r 1000 reps for bootstrap for comparison}
 set.seed(1)
-# Assume your original dataset is named `mydata` and it has a column named `vital.status`
+# Assume your original dataset is named `data` and it has a column named `vital.status`
 # Get the distribution of the vital status column
 vital_status_dist <- table(scl_common$vital.status)
 
@@ -940,6 +940,7 @@ bootstrap_func <- function(data) {
   bootstrap_sample <- sample_n(data, nrow(data), replace = TRUE)
   return(bootstrap_sample)
 }
+
 
 # Generate 1000 datasets using bootstrap sampling that match the distribution of the vital status column
 bootstrap_datasets <- replicate(1000,
@@ -1218,149 +1219,81 @@ cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$l
 mean_performance <- mean(cv_performance) # 0.6958149 with the 3 active predictors from MAD + SDE
 ```
 
-# Random Genes on 1000 simulated datasets
-```{r random genes 1000}
-scl_common <- scl_common %>%
-  select(
-    -patient.id, -sex, -smoker, -vital.status, -time, -n.stage, -m.stage,
-    -uicc.tumor.stage, -chemotherapy, -neoadjuvant.chemotherapy
-  )
-
-# Function to randomly sample genes from the dataset
-sample_genes <- function(df, n_genes, n_samples = 1000) {
-  gene_names <- colnames(df)
-  n_genes <- min(n_genes, length(gene_names))
-  samples <- lapply(1:n_samples, function(x) {
-    df %>%
-      select(sample(gene_names, n_genes, replace = FALSE)) %>%
-      rename_all(tolower)
-  })
-  return(samples)
+# Clinical Staging on 1000 simulated datasets
+```{r clinical staging 1000}
+# Function to efficiently simplify tumor staging
+modify_dataframe <- function(df) {
+  df <- df %>%
+    mutate(n.stage = factor(gsub("[A-Za-z]", "", n.stage))) %>%
+    mutate(m.stage = factor(gsub("[A-Za-z]", "", m.stage))) %>%
+    mutate(n.stage = ifelse(n.stage == "", NA, n.stage)) %>%
+    mutate(m.stage = ifelse(m.stage == "", NA, m.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "I", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ia", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ib", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ic", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IA", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IB", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IC", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "II", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIa", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIb", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIc", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIA", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIB", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIC", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "III", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIa", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIb", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIc", 3, uicc.tumor.stage)) %>%
+     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIA", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIB", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIC", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IV", 4, uicc.tumor.stage)) %>%
+    filter(!is.na(n.stage)) %>%
+    filter(!is.na(m.stage)) %>%
+    filter(!is.na(uicc.tumor.stage)) 
+    
+  return(df)
 }
 
-
-set.seed(123)
-sampled_genes <- sample_genes(df = scl_common, n_genes = 7, n_samples = 1000)
-
-# Re-loading the scl file so that we can include the meta data
-scl_patient <- read.csv(
-  file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
-  sep = "\t"
-)
-
-scl_patient <- scl_patient %>%
-  slice(5:121) %>%
-  rename(
-    Patient.ID = X.Patient.Identifier, Overall.Survival.Status = Overall.Survival.Status,
-    Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker
-  ) %>%
-  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Smoker, Sex) %>%
-  filter(Smoker != "Never") %>%
-  filter(Smoker != "") %>%
-  mutate(
-    Smoker = as.factor(Smoker),
-    Smoker = if_else(Smoker == "Current", true = 1, false = 0)
-  ) %>%
-  mutate(Overall.Survival.Status = ifelse(Overall.Survival.Status == "1:DECEASED", 1, 0)) %>%
-  rename(
-    vital.status = Overall.Survival.Status,
-    time = Overall.Survival.Months.
-  ) %>%
-  mutate(Patient.ID = gsub(
-    x = Patient.ID,
-    pattern = "sclc_ucologne_2015_S",
-    replacement = ""
-  )) %>%
-  mutate(vital.status_new = as.numeric(vital.status)) %>%
-  mutate(time_new = as.numeric(time)) %>%
-  select(-vital.status, -time) %>%
-  rename(
-    vital.status = vital.status_new,
-    time = time_new
-  ) %>%
-  mutate(time = time * 30) %>%
-  filter(time != 0) %>%
-  rename_all(tolower)
-
-
-scl_df <- read.csv(
-  file = "Data/sclc_ucologne_2015/data_mrna_seq_rpkm.txt",
-  sep = "\t"
-)
-
-scl_df <- subset(scl_df,
-  select = c(Hugo_Symbol, sclc_ucologne_2015_S00022:sclc_ucologne_2015_S02397)
-)
-
-# Clean up column names by removing prefix
-colnames(scl_df) <- sub("^sclc_ucologne_2015_S", "", colnames(scl_df))
-
-# Extract the list of gene symbols
-scl_genes <- scl_df$Hugo_Symbol
-
-# Find the list of patients that have data for both gene expression and clinical data
-common_patients <- intersect(scl_patient$patient.id, colnames(scl_df))
-
-# Select only the common columns from gene expression data and transpose it
-# so that each row corresponds to a patient
-scl_common <- scl_df %>%
-  select(all_of(common_patients)) %>%
-  t() %>%
-  as.data.frame()
-
-# Assign the gene symbols as column names
-colnames(scl_common) <- scl_genes
-
-# Remove duplicated columns and add patient ID as a column
-scl_common <- scl_common %>%
-  select(-which(duplicated(names(.)))) %>%
-  rownames_to_column(var = "patient.id")
-
-# Join the gene expression data with the clinical data for each patient
-scl_common <- left_join(scl_common, scl_patient[, c(
-  "vital.status", "time",
-  "patient.id"
-)],
-by = "patient.id"
-) %>%
-  rename_all(tolower) %>%
-  select(
-    patient.id, vital.status, time, everything()
-  )
-
-
-counter <- 1
 cox_outputs <- list()
-for (g in sampled_genes) {
-  current_genes <- g
-  current_genes <- colnames(current_genes)
-  for (d in 1:length(bootstrap_datasets)) {
-    current_dataset <- bootstrap_datasets[[d]]
-    current_cox <- cox_model_fitter(my_seed = 1, my_alpha = 0,
-                                    cox_predictors = current_genes, 
-                                    cox_df = current_dataset, 
-                                    gene_num = 7, 
-                                    n_folds = 10, 
-                                    calc_auc = FALSE,
-                                    save_coefs = FALSE,
-                                    verbose = FALSE,
-                                    cat_preds = FALSE)
-    cox_outputs[[counter]] <- current_cox
+counter <- 1
+cox_preds <- c("n.stage",  "m.stage",  "uicc.tumor.stage")
+bootstrap_datasets_clinical <- bootstrap_datasets
+bootstrap_datasets_clinical <- lapply(bootstrap_datasets_clinical, modify_dataframe)
 
-    if (is.null(current_cox)) {
-      next
-    } else {
-      counter <- counter + 1
-    }
-  }
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0, 
+    progress_free = FALSE,
+    sim_testing = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 3,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
 }
+
 
 # extract the mean cross-validated performance for each fold at the minimum lambda value
 cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
 
 # calculate the mean performance across all folds
-mean_performance <- mean(cv_performance) # 0.X with the 7 active predictors from random genes
+mean_performance <- mean(cv_performance) # 0.7081862 with the 3 active predictors from miRNA
 ```
+
 
 # Plot for individual metrics for overall survival with initial dataset perforamnce
 ```{r combining all overall survival cindicies together for first panel}
@@ -1418,8 +1351,9 @@ ggsave(p1, device = "svg", filename = "figure_a_panel_a.svg", path = "Figures/pa
 
 # Plot for individual metrics for overall survival with 1,000 simulated datasets performance
 ```{r combining all overall survival cindicies together for second panel}
-plot_df <- data.frame(metric = c("M", "S", "miR", "CS", "RG", "MS", "miRM", "miRS", "miRMS"), cindex = c(0.6212627, 0.6746058, 0.6920965, "0.X", "0.X", "0.6958149", "0.6907635", "0.6907635", "0.7204482"))
+plot_df <- data.frame(metric = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"), cindex = c(0.6212627, 0.6746058, 0.6920965, 0.7081862, 0.6958149, 0.6907635, 0.6907635, 0.7204482))
 
+plot_df$metric <- factor(plot_df$metric, levels = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"), labels = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"))
 p1 <- ggplot(data = plot_df, aes(x = metric, y = cindex, fill = metric, color = metric)) +
   geom_col(width = 0.4) +
   geom_text(aes(label = round(cindex, 2), y = cindex + 0.01),
@@ -1442,8 +1376,8 @@ p1 <- ggplot(data = plot_df, aes(x = metric, y = cindex, fill = metric, color = 
   ggtitle("1000 Bootstrapped Datasets | Overall Survival") +
   scale_y_continuous(expand = c(0, 0))
 p1 <- p1 + coord_cartesian(ylim = c(0.5, 0.8)) +
-  scale_fill_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef")) +
-  scale_color_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef"))
+  scale_fill_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef")) +
+  scale_color_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef"))
 p1
 
 # Save to PNG
@@ -1489,7 +1423,7 @@ for (d in 1:length(bootstrap_datasets)) {
 cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
 
 # calculate the mean performance across all folds
-mean_performance <- mean(cv_performance) # 0.7460983 with the 6 active perdictors from mad + sde + miRNA
+mean_performance <- mean(cv_performance) # 0.7460983 with the 6 active predictors from MAD + SDE + miRNA
 ```
 
 ```{r MAD progress free}
@@ -1710,6 +1644,209 @@ cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$l
 # calculate the mean performance across all folds
 mean_performance <- mean(cv_performance) # 0.732993 with the 3 active predictors from MAD + SDE
 ```
+
+# Clinical staging
+```{r clinical staging progress free}
+# Function to efficiently simplify tumor staging
+modify_dataframe <- function(df) {
+  df <- df %>%
+    mutate(n.stage = factor(gsub("[A-Za-z]", "", n.stage))) %>%
+    mutate(m.stage = factor(gsub("[A-Za-z]", "", m.stage))) %>%
+    mutate(n.stage = ifelse(n.stage == "", NA, n.stage)) %>%
+    mutate(m.stage = ifelse(m.stage == "", NA, m.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "I", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ia", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ib", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "Ic", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IA", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IB", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IC", 1, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "II", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIa", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIb", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIc", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIA", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIB", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIC", 2, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "III", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIa", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIb", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIc", 3, uicc.tumor.stage)) %>%
+     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIA", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIB", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIC", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IV", 4, uicc.tumor.stage)) %>%
+    filter(!is.na(n.stage)) %>%
+    filter(!is.na(m.stage)) %>%
+    filter(!is.na(uicc.tumor.stage)) 
+    
+  return(df)
+}
+
+cox_outputs <- list()
+counter <- 1
+cox_preds <- c("n.stage",  "m.stage",  "uicc.tumor.stage")
+bootstrap_datasets_clinical <- bootstrap_datasets
+bootstrap_datasets_clinical <- lapply(bootstrap_datasets_clinical, modify_dataframe)
+
+for (d in 1:length(bootstrap_datasets)) {
+  current_dataset <- bootstrap_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0, 
+    progress_free = TRUE,
+    sim_testing = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 3,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.7208957 with the 3 active predictors from clinical staging
+```
+
+# Plot for individual metrics for progress free survival with 1,000 simulated datasets performance
+```{r combining all overall survival cindicies together for third panel}
+plot_df <- data.frame(metric = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"),
+                      cindex = c(0.7001656, 0.749532, 0.7488896, 0.7208957, 0.732993, 0.7463801, 0.7463801, 0.7460983))
+
+plot_df$metric <- factor(plot_df$metric, levels = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"), labels = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"))
+p1 <- ggplot(data = plot_df, aes(x = metric, y = cindex, fill = metric, color = metric)) +
+  geom_col(width = 0.4) +
+  geom_text(aes(label = round(cindex, 2), y = cindex + 0.01),
+    size = 4,
+    position = position_dodge(width = 0.4), color = "black"
+  ) +
+  theme(
+    panel.background = element_blank(),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, vjust = 0.7),
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.ticks.length = unit(0.2, units = "cm"),
+    legend.position = "none",
+    axis.ticks = element_line(color = "black", linewidth = 0.75)
+  ) +
+  xlab("Metric") +
+  ylab("Mean 10-fold CV C-index") +
+  ggtitle("1000 Bootstrapped Datasets | Progress Free Survival") +
+  scale_y_continuous(expand = c(0, 0))
+p1 <- p1 + coord_cartesian(ylim = c(0.5, 0.8)) +
+  scale_fill_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef")) +
+  scale_color_manual(values = c("grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "grey35", "#0796ef"))
+p1
+
+# Save to PNG
+ggsave(p1, device = "png", filename = "figure_a_panel_c.png", path = "Figures/panels/", width = 9, height = 9, dpi = 600, units = "in")
+
+# Save to SVG
+ggsave(p1, device = "svg", filename = "figure_a_panel_c.svg", path = "Figures/panels/", width = 9, height = 9, dpi = 600, units = "in")
+```
+
+# Simulating survival data
+```{r simulating survival data}
+preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
+top_pred_df <- select(scl_common, all_of(preds))
+simdata <- sim.survdata(N = 72, T=4920, X=top_pred_df, num.data.frames = 1000, beta = c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091), censor = 0.362)
+
+# First, let's assume your coefficients for each gene are stored in a vector like this:
+coef <- c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091)
+
+# And your data frame `data` has columns named after the genes
+genes <- c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
+
+# Then, you can calculate the risk score like this:
+test <- simdata[[1]]$data
+test2 <- simdata[[25]]$data
+test$risk_score <- rowSums(sapply(seq_along(genes), function(i) test[, genes[i]] * coef[i]))
+test2$risk_score <- rowSums(sapply(seq_along(genes), function(i) test2[, genes[i]] * coef[i]))
+
+# Now, you may want to binarize the risk score into high and low risk groups, using median risk as a threshold:
+median_risk <- median(test$risk_score)
+median_risk <- median(test2$risk_score)
+test$risk <- ifelse(test$risk_score > median_risk, "high", "low")
+test2$risk <- ifelse(test2$risk_score > median_risk, "high", "low")
+
+# Original data risk score
+scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
+median_risk <- median(scl_common$risk_score)
+scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
+scl_common <- scl_common %>%
+  select(patient.id, sex, smoker, vital.status, time, n.stage, m.stage, uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, risk_score, risk, everything())
+
+# Function to compute p-value from Kaplan-Meier fit
+compute_p_value <- function(data) {
+  fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
+  logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
+  p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+  return(p_value)
+}
+
+# Compute observed p-value
+observed_p_value <- compute_p_value(scl_common)
+
+# Permutation test
+set.seed(1)
+n_permutations <- 1000
+permuted_p_values <- replicate(n_permutations, {
+  permuted_data <- scl_common
+  permuted_data$risk <- sample(scl_common$risk)  # Randomly permute risk labels
+  compute_p_value(permuted_data)
+})
+
+# Compute p-value of permutation test
+perm_p_value <- mean(permuted_p_values <= observed_p_value)
+
+# Plotting the KM curve
+fit <- survfit(Surv(scl_common$time, scl_common$vital.status) ~ risk, data = scl_common)
+p1 <- ggsurvplot(fit = fit,
+           data = scl_common,
+           conf.int = TRUE,
+           pval = TRUE,
+           pval.size = 5,
+           pval.coord = c(3500, 0.8),
+           palette = c("red", "blue"),
+           risk.table = FALSE,
+           censor.shape = "|",
+           size = 1.5, 
+           censor.size = 4.5,
+           xlab = "Time (days)",
+           legend.title = "Risk",
+           title = "Single Dataset | miRMS",
+           legend.labs = c("High risk", "Low risk"),
+           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+                 axis.title = element_text(size = 18, face = "bold"),
+                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+                 axis.text = element_text(size = 16),
+                 axis.ticks = element_line(linewidth = 1.25),
+                 legend.title = element_text(size = 16, face = "bold"),
+                 legend.text = element_text(size = 14),
+                 panel.background = element_blank()))
+
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_d.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_d.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+```
+
 
 
 # Attempt to use permutation test to seperate high and low risk group
