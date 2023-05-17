@@ -65,7 +65,7 @@ invisible(lapply(list.files("Code", pattern = "\\.R$", full.names = TRUE), sourc
 ```
 
 # Loading bulk SCLC data from U of Cologne that contains survival information
-```{r reading data}
+```{r loading data}
 # Load gene expression data from a file and select relevant columns
 scl_df <- read.csv(
   file = "Data/sclc_ucologne_2015/data_mrna_seq_rpkm.txt",
@@ -117,12 +117,12 @@ scl_patient <- scl_patient %>%
   mutate(time = time * 30) %>%
   filter(time != 0) %>%
   mutate(Progress.Free.Survival.Months. = ifelse(Progress.Free.Survival.Months. == "", NA, Progress.Free.Survival.Months.)) %>%
-  rename_all(tolower)
-  # Uncomment this line for the non-progress free analysis
-  # filter(!is.na(progress.free.survival.months.)) %>%
-  # rename(time2 = progress.free.survival.months.) %>%
-  # mutate(time2 = as.numeric(time2)) %>%
-  # mutate(time2 = time2 * 30)
+  rename_all(tolower) %>%
+  # Uncomment this line for the progress free analysis
+  filter(!is.na(progress.free.survival.months.)) %>%
+  rename(time2 = progress.free.survival.months.) %>%
+  mutate(time2 = as.numeric(time2)) %>%
+  mutate(time2 = time2 * 30)
 
 
 # Extract the list of gene symbols
@@ -150,7 +150,7 @@ scl_common <- scl_common %>%
 # Join the gene expression data with the clinical data for each patient
 scl_common <- left_join(scl_common, scl_patient[, c(
   "sex", "smoker",
-  "vital.status", "time",
+  "vital.status", "time", "time2",
   "patient.id", "n.stage", "m.stage", "uicc.tumor.stage",
   "chemotherapy", "neoadjuvant.chemotherapy"
 )],
@@ -158,7 +158,7 @@ by = "patient.id"
 ) %>%
   rename_all(tolower) %>%
   select(
-    patient.id, sex, smoker, vital.status, time, n.stage, m.stage,
+    patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
     uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, everything()
   )
 
@@ -427,9 +427,13 @@ for (f in file_list) {
     cindex_active_genes <- as.numeric(as.vector(current_cox$CV$nzero[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]))
     lambda <- current_cox$CV$lambda.min
     measure <- "Concordance-index"
+    active_genes <- current_cox$`Active Genes`
+    active_coefs <- current_cox$`Active Coefficients`
     cindex_se <- round(as.numeric(current_cox$CV$cvsd[which(current_cox$CV$lambda == current_cox$CV$lambda.min)]), digits = 4)
     cindex_index <- current_cox$CV$index["min", ]
     cindex_df <- as.data.frame(cbind(cindex, cindex_se, cindex_active_genes, lambda, measure, cindex_index))
+    cindex_df$active_genes <- paste(active_genes, collapse = ",")
+    cindex_df$active_coefs <- paste(active_coefs, collapse = ",")
     write.csv(cindex_df, paste0("Outputs/mirna/glmnet_", gn, "_genes_glmnet_index_", cindex_index, "_lambda_", lambda, "_mirnas_", mirnas, "_targets_", mirna_genes, ".csv"))
     counter <- counter + 1
   }
@@ -658,20 +662,6 @@ write.csv(all_individual_met_df, "Outputs/all_individual_metrics_cindex.csv")
 
 # Getting miRNA targeting info to make miRNA metric
 ```{r mirna}
-# Load the data
-mirna_data <- read.csv("Data/mirna_data/hmdd_3_2_all_data.txt", sep = "\t")
-
-# Filter the data down to just miRNAs that are lung related and are
-# classified as upregulated/increased
-mirna_data <- mirna_data %>%
-  filter(grepl("up", category)) %>%
-  filter(disease %in% c(
-    "Lung Disease [unspecific]", "Lung Fibrosis",
-    "Lung Injury [unspecific]", "Lung Neoplasms"
-  )) %>%
-  select(mir)
-
-
 # Now sending those miRNAs to TargetScan
 mirna_num <- seq(100, 800, 100)
 mirna_target_num <- seq(2, 8, 1)
@@ -907,24 +897,6 @@ for (ms in mirna_mad_sde_optimized) {
 
 all_mirna_mad_sde_cindices <- read_files(folder_path = "Outputs/glmnet_cindices/mirna_mad_sde/", pattern = "*.csv")
 max_mirna_mad_sde_cindices <- all_mirna_mad_sde_cindices[which.max(all_mirna_mad_sde_cindices$cindex), ] # 0.76910 with 6 active predictors
-```
-
-# KM Plot. Unbalanced dataset. Will need to work on this more as we currently have problems
-```{r risk seperation}
-risk_genes <- data.frame(gene = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"), coef = c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091))
-
-write.csv(risk_genes, "Outputs/mirna_mad_sde_coefs.csv")
-
-km_plot <- risk_score_calculator(
-  my.file = "Outputs/mirna_mad_sde_coefs.csv",
-  tumor.data = FALSE,
-  n.data = FALSE,
-  set.ci = TRUE,
-  cox.df = scl_common,
-  plot.title = "SCLC",
-  perform_ipcw = FALSE
-)
-km_plot$`KM Plot`
 ```
 
 # Attempting to generate several synthetic datasets based on our original survival distribution
@@ -1783,19 +1755,37 @@ median_risk <- median(test2$risk_score)
 test$risk <- ifelse(test$risk_score > median_risk, "high", "low")
 test2$risk <- ifelse(test2$risk_score > median_risk, "high", "low")
 
+```
+
+# miRNA + MAD + SDE Overall survival KM plot
+```{r original data risk score and km plot for miRNA + MAD + SDE}
 # Original data risk score
+# First, let's assume your coefficients for each gene are stored in a vector like this:
+coef <- c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091)
+
+# And your data frame `data` has columns named after the genes
+genes <- c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
+
 scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
 median_risk <- median(scl_common$risk_score)
 scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
+
 scl_common <- scl_common %>%
   select(patient.id, sex, smoker, vital.status, time, n.stage, m.stage, uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, risk_score, risk, everything())
 
 # Function to compute p-value from Kaplan-Meier fit
-compute_p_value <- function(data) {
-  fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
-  logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
-  p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
-  return(p_value)
+compute_p_value <- function(data, progress_free = FALSE) {
+  if (progress_free){
+    fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  } else{
+    fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  }
 }
 
 # Compute observed p-value
@@ -1812,6 +1802,7 @@ permuted_p_values <- replicate(n_permutations, {
 
 # Compute p-value of permutation test
 perm_p_value <- mean(permuted_p_values <= observed_p_value)
+
 
 # Plotting the KM curve
 fit <- survfit(Surv(scl_common$time, scl_common$vital.status) ~ risk, data = scl_common)
@@ -1847,44 +1838,376 @@ ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_d.png", dev
 ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_d.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
 ```
 
+# miRNA Overall survival KM plot
+```{r miRNA alone overall survival KM plot}
+# Original data risk score
+# First, let's assume your coefficients for each gene are stored in a vector like this:
+coef <- c(-0.0175147427192908,-0.813624034216674,-0.0808400629378394,-0.175783984675757,0.59820613021554)
 
+# And your data frame `data` has columns named after the genes
+genes <- c("znf460","tfrc","fam83f","samd12","grin2b")
 
-# Attempt to use permutation test to seperate high and low risk group
-```{r now using permutation test to see if we have high and low risk separation}
-# Assume your 6-gene predictor is stored in a vector called 'risk_scores'
-# Assume your vital status information (0 for alive, 1 for dead) is stored in a vector called 'vital_status'
-# Assume you want to perform 1000 permutations
+scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
+median_risk <- median(scl_common$risk_score)
+scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
 
-risk_scores <- c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
+scl_common <- scl_common %>%
+  select(patient.id, sex, smoker, vital.status, time, n.stage, m.stage, uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, risk_score, risk, everything())
 
-set.seed(1) # for reproducibility
-
-# Define a function to calculate the difference in median survival time between the high and low-risk groups
-med_diff <- function(risk, vital) {
-  high_risk <- risk >= median(risk)
-  low_risk <- risk < median(risk)
-  med_diff <- median(vital[high_risk]) - median(vital[low_risk])
-  return(med_diff)
+# Function to compute p-value from Kaplan-Meier fit
+compute_p_value <- function(data, progress_free = FALSE) {
+  if (progress_free){
+    fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  } else{
+    fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  }
 }
 
-# Calculate the observed median difference in survival time between the high and low-risk groups
-observed_med_diff <- med_diff(risk_scores, scl_common$vital.status)
+# Compute observed p-value
+observed_p_value <- compute_p_value(scl_common)
 
-# Perform the permutation test
-perm_med_diffs <- replicate(1000, {
-  perm_vital_status <- sample(vital_status)
-  med_diff(risk_scores, perm_vital_status)
-})
 
-# Calculate the p-value
-p_value <- mean(abs(perm_med_diffs) >= abs(observed_med_diff))
+# Plotting the KM curve
+fit <- survfit(Surv(scl_common$time, scl_common$vital.status) ~ risk, data = scl_common)
+p1 <- ggsurvplot(fit = fit,
+           data = scl_common,
+           conf.int = TRUE,
+           pval = TRUE,
+           pval.size = 5,
+           pval.coord = c(3500, 0.8),
+           palette = c("red", "blue"),
+           risk.table = FALSE,
+           censor.shape = "|",
+           size = 1.5, 
+           censor.size = 4.5,
+           xlab = "Time (days)",
+           legend.title = "Risk",
+           title = "Single Dataset | miRNA",
+           legend.labs = c("High risk", "Low risk"),
+           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+                 axis.title = element_text(size = 18, face = "bold"),
+                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+                 axis.text = element_text(size = 16),
+                 axis.ticks = element_line(linewidth = 1.25),
+                 legend.title = element_text(size = 16, face = "bold"),
+                 legend.text = element_text(size = 14),
+                 panel.background = element_blank()))
 
-# Plot the distribution of median differences under permutation
-hist(perm_med_diffs, main = "Distribution of Median Differences under Permutation", xlab = "Median Difference")
 
-# Add a vertical line indicating the observed median difference
-abline(v = observed_med_diff, col = "red")
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_e.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
 
-# Add text indicating the p-value
-text(-5, 80, paste0("p-value: ", round(p_value, 3)))
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_e.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
 ```
+
+# miRNA Progress free survival KM plot
+```{r miRNA alone progress free survival KM plot}
+# Original data risk score
+# First, let's assume your coefficients for each gene are stored in a vector like this:
+coef <- c(-0.0175147427192908,-0.813624034216674,-0.0808400629378394,-0.175783984675757,0.59820613021554)
+
+# And your data frame `data` has columns named after the genes
+genes <- c("znf460","tfrc","fam83f","samd12","grin2b")
+
+scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
+median_risk <- median(scl_common$risk_score)
+scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
+
+scl_common <- scl_common %>%
+  select(patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage, uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, risk_score, risk, everything())
+
+# Function to compute p-value from Kaplan-Meier fit
+compute_p_value <- function(data, progress_free = FALSE) {
+  if (progress_free){
+    fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  } else{
+    fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  }
+}
+
+# Compute observed p-value
+observed_p_value <- compute_p_value(scl_common, progress_free = TRUE)
+
+
+# Plotting the KM curve
+fit <- survfit(Surv(scl_common$time2, scl_common$vital.status) ~ risk, data = scl_common)
+p1 <- ggsurvplot(fit = fit,
+           data = scl_common,
+           conf.int = TRUE,
+           pval = TRUE,
+           pval.size = 5,
+           pval.coord = c(2500, 0.8),
+           palette = c("red", "blue"),
+           risk.table = FALSE,
+           censor.shape = "|",
+           size = 1.5, 
+           censor.size = 4.5,
+           xlab = "Time (days)",
+           legend.title = "Risk",
+           title = "Single Dataset | miRNA | Progress Free",
+           legend.labs = c("High risk", "Low risk"),
+           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+                 axis.title = element_text(size = 18, face = "bold"),
+                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+                 axis.text = element_text(size = 16),
+                 axis.ticks = element_line(linewidth = 1.25),
+                 legend.title = element_text(size = 16, face = "bold"),
+                 legend.text = element_text(size = 14),
+                 panel.background = element_blank()))
+
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_f.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_f.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+```
+
+# All 3 metrics Progress free survival KM plot
+```{r miRNA alone progress free survival KM plot}
+# Original data risk score
+coef <- c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091)
+
+# And your data frame `data` has columns named after the genes
+genes <- c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
+
+
+scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
+median_risk <- median(scl_common$risk_score)
+scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
+
+scl_common <- scl_common %>%
+  select(patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
+         uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy,
+         risk_score, risk, everything())
+
+# Function to compute p-value from Kaplan-Meier fit
+compute_p_value <- function(data, progress_free = FALSE) {
+  if (progress_free){
+    fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  } else{
+    fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  }
+}
+
+# Compute observed p-value
+observed_p_value <- compute_p_value(scl_common, progress_free = TRUE)
+
+
+# Plotting the KM curve
+fit <- survfit(Surv(scl_common$time2, scl_common$vital.status) ~ risk, data = scl_common)
+p1 <- ggsurvplot(fit = fit,
+           data = scl_common,
+           conf.int = TRUE,
+           pval = TRUE,
+           pval.size = 5,
+           pval.coord = c(2500, 0.8),
+           palette = c("red", "blue"),
+           risk.table = FALSE,
+           censor.shape = "|",
+           size = 1.5, 
+           censor.size = 4.5,
+           xlab = "Time (days)",
+           legend.title = "Risk",
+           title = "Single Dataset | miRMS | Progress Free",
+           legend.labs = c("High risk", "Low risk"),
+           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+                 axis.title = element_text(size = 18, face = "bold"),
+                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+                 axis.text = element_text(size = 16),
+                 axis.ticks = element_line(linewidth = 1.25),
+                 legend.title = element_text(size = 16, face = "bold"),
+                 legend.text = element_text(size = 14),
+                 panel.background = element_blank()))
+
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_g.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_g.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+
+
+# Permuted p-value
+# Create a data frame with the p-values
+df <- data.frame(p_value = permuted_p_values)
+
+# Plot the histogram
+hist <- ggplot(df, aes(x = p_value)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "black") +
+  labs(x = "P-value", y = "Frequency") +
+  ggtitle("1,000 Permutations | miRMS | Progress Free") +
+  geom_vline(xintercept = observed_p_value, linetype = "solid", color = "red", linewidth = 1.25) +
+  theme(plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.text = element_text(size = 18),
+        axis.line = element_line(color = "black", size = 1.25, lineend = "round"),
+        axis.ticks = element_line(color = "black", linewidth = 1.25),
+        panel.background = element_blank(),
+        panel.grid.major.y = element_line(color = "black", linewidth = 1.25),
+        panel.grid.major.x = element_blank())+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))
+
+hist
+
+
+# Saving as PNG
+ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_h.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_h.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+```
+
+# miRNA only Progress free survival permutations
+```{r miRNA alone progress free survival KM plot}
+coef <- c(-0.0175147427192908,-0.813624034216674,-0.0808400629378394,-0.175783984675757,0.59820613021554)
+
+# And your data frame `data` has columns named after the genes
+genes <- c("znf460","tfrc","fam83f","samd12","grin2b")
+
+
+scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
+median_risk <- median(scl_common$risk_score)
+scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
+
+scl_common <- scl_common %>%
+  select(patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
+         uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy,
+         risk_score, risk, everything())
+
+# Function to compute p-value from Kaplan-Meier fit
+compute_p_value <- function(data, progress_free = FALSE) {
+  if (progress_free){
+    fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  } else{
+    fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
+    logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
+    p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
+    return(p_value)
+  }
+}
+
+# Compute observed p-value
+observed_p_value <- compute_p_value(scl_common, progress_free = TRUE)
+
+
+# Permuted p-value
+# Create a data frame with the p-values
+df <- data.frame(p_value = permuted_p_values)
+
+# Plot the histogram
+hist <- ggplot(df, aes(x = p_value)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "black") +
+  labs(x = "P-value", y = "Frequency") +
+  ggtitle("1,000 Permutations | miRNA | Progress Free") +
+  geom_vline(xintercept = observed_p_value, linetype = "solid", color = "red", linewidth = 1.25) +
+  theme(plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.text = element_text(size = 18),
+        axis.line = element_line(color = "black", size = 1.25, lineend = "round"),
+        axis.ticks = element_line(color = "black", linewidth = 1.25),
+        panel.background = element_blank(),
+        panel.grid.major.y = element_line(color = "black", linewidth = 1.25),
+        panel.grid.major.x = element_blank())+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))
+
+hist
+
+
+# Saving as PNG
+ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_i.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_i.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+```
+
+
+# Attempt to find other datasets
+```{r sclccellminercdb cell lines}
+# Using SCLCCellMinerCDB Cell lines to attempt to do that
+cell_lines <- read.csv("Data/data_SCLC NCI-DTP_exp.txt", sep = "\t")
+cell_lines <- cell_lines %>%
+  select(-TranscriptClusterID, -UNIT_ID, -GeneName, -GeneAccession, -EntrezID, -Chromosome, -Cytoband, -Start, -Stop, -Strand, -CrossHybridization, -ProbesetType)
+
+# Generating the survival distribution from our existing dataset
+surv_model <- survfit(Surv(time, vital.status) ~ 1, data = scl_common)
+surv_distribution <- summary(surv_model)$surv
+
+# Now using the survival distribution to add vital.status and survival times to the cell line data
+# Assuming you have a vector of survival times and statuses in the 'surv_times' and 'surv_statuses' objects
+
+# Number of cell lines
+num_cell_lines <- ncol(cell_lines) - 1
+
+
+# Number of synthetic datasets to generate
+num_datasets <- 1000
+
+# Number of synthetic times and statuses to generate for each dataset
+num_synthetic <- 1000
+
+
+# Create an empty list to store the synthetic survival data for each dataset
+synthetic_survival_data <- vector("list", length = num_datasets)
+
+
+rownames(cell_lines) <- cell_lines$GeneSymbol
+cell_lines_sub <- cell_lines %>% select(-GeneSymbol)
+
+# Generate synthetic survival times and statuses for each dataset and each cell line
+for (i in 1:num_datasets) {
+  synthetic_times <- replicate(num_synthetic, sample(surv_times, size = num_cell_lines, replace = TRUE))
+  synthetic_statuses <- replicate(num_synthetic, sample(surv_statuses, size = num_cell_lines, replace = TRUE))
+  
+  # Create a new dataframe with the synthetic survival data
+  synthetic_survival_data[[i]] <- data.frame(
+    cell_line = colnames(cell_lines_sub),  # Assuming your gene expression matrix has column names for cell lines
+    time = synthetic_times,
+    vital.status = synthetic_statuses
+  )
+}
+
+# surv_times <- scl_common$time
+# surv_statuses <- scl_common$vital.status
+# 
+# # Generate synthetic survival times and statuses for each cell line
+# synthetic_times <- sample(surv_times, size = num_cell_lines, replace = TRUE)
+# synthetic_statuses <- sample(surv_statuses, size = num_cell_lines, replace = TRUE)
+# 
+# # Create a new dataframe with the synthetic survival data
+# cell_lines_sub <- cell_lines %>% select(-GeneSymbol)
+# synthetic_survival_data <- data.frame(
+#   cell_line = colnames(cell_lines_sub),  # Assuming your gene expression matrix has column names for cell lines
+#   time = synthetic_times,
+#   vital.status = synthetic_statuses
+# )
+
+
+```
+
+
+
