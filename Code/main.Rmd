@@ -2357,11 +2357,53 @@ for (i in 1:n_datasets){
   finished_datasets[[i]] <- finished_dataset
 }
 
-# Combining the synthetic gene expression and survival times together
-synthetic_expression <- synthetic_expression %>%
-  as.data.frame(synthetic_expression) %>%
-  mutate(time = simulated_data$time) %>%
-  mutate(status = simulated_data$status)
 
-rownames(synthetic_expression) <- colnames(cell_lines)
+rm(simulated_datasets, simulated_gene_datasets)
 ```
+
+```{r testing miRMS signature on cell lines}
+# Renaming status column to vital.status for cox model code
+# Function to rename a column in a data frame using dplyr
+rename_column <- function(df, old_name, new_name) {
+  df <- df %>% rename({{ new_name }} := {{ old_name }})
+  return(df)
+}
+
+
+finished_datasets <- lapply(finished_datasets, rename_column, old_name = "status", new_name = "vital.status")
+
+cox_outputs <- list()
+counter <- 1
+cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"))
+rownames(cox_preds) <- cox_preds$preds
+for (d in 1:length(finished_datasets)) {
+  current_dataset <- finished_datasets[[d]]
+  current_cox <- cox_model_fitter(
+    my_seed = 1,
+    my_alpha = 0,
+    sim_testing = TRUE,
+    cox_predictors = cox_preds,
+    cox_df = current_dataset,
+    gene_num = 6,
+    save_coefs = FALSE,
+    tumor_stage = FALSE,
+    tumor_n = FALSE,
+    tumor_m = FALSE,
+    calc_auc = FALSE,
+    cat_preds = FALSE,
+    n_folds = 10
+  )
+
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
+
+
+# extract the mean cross-validated performance for each fold at the minimum lambda value
+cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$lambda.min])
+
+# calculate the mean performance across all folds
+mean_performance <- mean(cv_performance) # 0.7204482 with the 6 active perdictors from mad + sde + miRNA
+```
+
+
