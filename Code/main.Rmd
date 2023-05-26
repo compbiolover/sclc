@@ -7,7 +7,9 @@ output: html_document
 
 ```{r setup, include=FALSE}
 # This sets the global chunk options for knitr to display the R code.
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  echo = TRUE
+)
 
 # This sets the root directory for knitr to the project directory.
 knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/sclc/")
@@ -40,8 +42,8 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 # viridis: for creating color palettes for data visualization that are perceptually uniform and easy to interpret
 
 pacman::p_load(
-  cowplot, coxed, data.table, devtools, ggplot2, glmnet, hoardeR, igraph, Matrix, monocle3, parallel, phateR,
-  reticulate, retry, Rmagic, styler, survival, survminer, svglite, switchde, tidyverse, viridis
+  cowplot, coxed, data.table, devtools, doParallel, ggplot2, glmnet, hoardeR, igraph, Matrix, monocle3, parallel, phateR,
+  reticulate, retry, Rmagic, styler, survival, survminer, survsim, svglite, switchde, tidyverse, viridis
 )
 ```
 
@@ -117,12 +119,12 @@ scl_patient <- scl_patient %>%
   mutate(time = time * 30) %>%
   filter(time != 0) %>%
   mutate(Progress.Free.Survival.Months. = ifelse(Progress.Free.Survival.Months. == "", NA, Progress.Free.Survival.Months.)) %>%
-  rename_all(tolower) %>%
-  # Uncomment this line for the progress free analysis
-  filter(!is.na(progress.free.survival.months.)) %>%
-  rename(time2 = progress.free.survival.months.) %>%
-  mutate(time2 = as.numeric(time2)) %>%
-  mutate(time2 = time2 * 30)
+  rename_all(tolower)
+# Uncomment this line for the progress free analysis
+# filter(!is.na(progress.free.survival.months.)) %>%
+# rename(time2 = progress.free.survival.months.) %>%
+# mutate(time2 = as.numeric(time2)) %>%
+# mutate(time2 = time2 * 30)
 
 
 # Extract the list of gene symbols
@@ -150,7 +152,7 @@ scl_common <- scl_common %>%
 # Join the gene expression data with the clinical data for each patient
 scl_common <- left_join(scl_common, scl_patient[, c(
   "sex", "smoker",
-  "vital.status", "time", "time2",
+  "vital.status", "time",
   "patient.id", "n.stage", "m.stage", "uicc.tumor.stage",
   "chemotherapy", "neoadjuvant.chemotherapy"
 )],
@@ -158,7 +160,7 @@ by = "patient.id"
 ) %>%
   rename_all(tolower) %>%
   select(
-    patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
+    patient.id, sex, smoker, vital.status, time, n.stage, m.stage,
     uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, everything()
   )
 
@@ -1218,20 +1220,20 @@ modify_dataframe <- function(df) {
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIa", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIb", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIc", 3, uicc.tumor.stage)) %>%
-     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIA", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIA", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIB", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIC", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IV", 4, uicc.tumor.stage)) %>%
     filter(!is.na(n.stage)) %>%
     filter(!is.na(m.stage)) %>%
-    filter(!is.na(uicc.tumor.stage)) 
-    
+    filter(!is.na(uicc.tumor.stage))
+
   return(df)
 }
 
 cox_outputs <- list()
 counter <- 1
-cox_preds <- c("n.stage",  "m.stage",  "uicc.tumor.stage")
+cox_preds <- c("n.stage", "m.stage", "uicc.tumor.stage")
 bootstrap_datasets_clinical <- bootstrap_datasets
 bootstrap_datasets_clinical <- lapply(bootstrap_datasets_clinical, modify_dataframe)
 
@@ -1239,7 +1241,7 @@ for (d in 1:length(bootstrap_datasets)) {
   current_dataset <- bootstrap_datasets[[d]]
   current_cox <- cox_model_fitter(
     my_seed = 1,
-    my_alpha = 0, 
+    my_alpha = 0,
     progress_free = FALSE,
     sim_testing = TRUE,
     cox_predictors = cox_preds,
@@ -1372,7 +1374,7 @@ for (d in 1:length(bootstrap_datasets)) {
   current_cox <- cox_model_fitter(
     my_seed = 1,
     my_alpha = 0,
-    sim_testing = TRUE, 
+    sim_testing = TRUE,
     progress_free = TRUE,
     cox_predictors = cox_preds,
     cox_df = current_dataset,
@@ -1444,7 +1446,7 @@ for (d in 1:length(bootstrap_datasets)) {
   current_cox <- cox_model_fitter(
     my_seed = 1,
     my_alpha = 0,
-    sim_testing = TRUE, 
+    sim_testing = TRUE,
     progress_free = TRUE,
     cox_predictors = cox_preds,
     cox_df = current_dataset,
@@ -1481,7 +1483,7 @@ for (d in 1:length(bootstrap_datasets)) {
   current_cox <- cox_model_fitter(
     my_seed = 1,
     my_alpha = 0,
-    sim_testing = TRUE, 
+    sim_testing = TRUE,
     progress_free = TRUE,
     cox_predictors = cox_preds,
     cox_df = current_dataset,
@@ -1518,7 +1520,7 @@ for (d in 1:length(bootstrap_datasets)) {
   current_cox <- cox_model_fitter(
     my_seed = 1,
     my_alpha = 0,
-    sim_testing = TRUE, 
+    sim_testing = TRUE,
     progress_free = TRUE,
     cox_predictors = cox_preds,
     cox_df = current_dataset,
@@ -1644,20 +1646,20 @@ modify_dataframe <- function(df) {
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIa", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIb", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIc", 3, uicc.tumor.stage)) %>%
-     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIA", 3, uicc.tumor.stage)) %>%
+    mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIA", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIB", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IIIC", 3, uicc.tumor.stage)) %>%
     mutate(uicc.tumor.stage = ifelse(uicc.tumor.stage == "IV", 4, uicc.tumor.stage)) %>%
     filter(!is.na(n.stage)) %>%
     filter(!is.na(m.stage)) %>%
-    filter(!is.na(uicc.tumor.stage)) 
-    
+    filter(!is.na(uicc.tumor.stage))
+
   return(df)
 }
 
 cox_outputs <- list()
 counter <- 1
-cox_preds <- c("n.stage",  "m.stage",  "uicc.tumor.stage")
+cox_preds <- c("n.stage", "m.stage", "uicc.tumor.stage")
 bootstrap_datasets_clinical <- bootstrap_datasets
 bootstrap_datasets_clinical <- lapply(bootstrap_datasets_clinical, modify_dataframe)
 
@@ -1665,7 +1667,7 @@ for (d in 1:length(bootstrap_datasets)) {
   current_dataset <- bootstrap_datasets[[d]]
   current_cox <- cox_model_fitter(
     my_seed = 1,
-    my_alpha = 0, 
+    my_alpha = 0,
     progress_free = TRUE,
     sim_testing = TRUE,
     cox_predictors = cox_preds,
@@ -1694,8 +1696,10 @@ mean_performance <- mean(cv_performance) # 0.7208957 with the 3 active predictor
 
 # Plot for individual metrics for progress free survival with 1,000 simulated datasets performance
 ```{r combining all overall survival cindicies together for third panel}
-plot_df <- data.frame(metric = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"),
-                      cindex = c(0.7001656, 0.749532, 0.7488896, 0.7208957, 0.732993, 0.7463801, 0.7463801, 0.7460983))
+plot_df <- data.frame(
+  metric = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"),
+  cindex = c(0.7001656, 0.749532, 0.7488896, 0.7208957, 0.732993, 0.7463801, 0.7463801, 0.7460983)
+)
 
 plot_df$metric <- factor(plot_df$metric, levels = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"), labels = c("M", "S", "miR", "CS", "MS", "miRM", "miRS", "miRMS"))
 p1 <- ggplot(data = plot_df, aes(x = metric, y = cindex, fill = metric, color = metric)) +
@@ -1733,9 +1737,9 @@ ggsave(p1, device = "svg", filename = "figure_a_panel_c.svg", path = "Figures/pa
 
 # Simulating survival data
 ```{r simulating survival data}
-preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
+preds <- c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
 top_pred_df <- select(scl_common, all_of(preds))
-simdata <- sim.survdata(N = 72, T=4920, X=top_pred_df, num.data.frames = 1000, beta = c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091), censor = 0.362)
+simdata <- sim.survdata(N = 1000, T = 4920, X = top_pred_df, num.data.frames = 1000, beta = c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091), censor = 0.18)
 
 # First, let's assume your coefficients for each gene are stored in a vector like this:
 coef <- c(-0.75737985824054, -0.0706471525401676, -0.16554139965723, 0.305795111401098, -0.000374799303479439, -0.027261204056091)
@@ -1755,6 +1759,30 @@ median_risk <- median(test2$risk_score)
 test$risk <- ifelse(test$risk_score > median_risk, "high", "low")
 test2$risk <- ifelse(test2$risk_score > median_risk, "high", "low")
 
+
+
+# # Extract the number of cell lines and genes from the original dataset
+# num_cell_lines <- ncol(cell_lines)
+# num_genes <- nrow(cell_lines)
+# 
+# # Calculate the mean and standard deviation of gene expression from the original dataset
+# mean_expression <- apply(cell_lines, 1, mean)
+# sd_expression <- apply(cell_lines, 1, sd)
+# 
+# # Generate synthetic gene expression profiles
+# synthetic_expression <- matrix(rnorm(num_cell_lines * num_genes, mean_expression, sd_expression),
+#   nrow = num_genes, ncol = num_cell_lines, dimnames = list(rownames(cell_lines), colnames(cell_lines))
+# )
+# 
+# synthetic_expression <- t(synthetic_expression)
+# 
+# colnames(synthetic_expression) <- tolower(colnames(synthetic_expression))
+# 
+# # Print the dimensions of the synthetic expression matrix
+# cat("Dimensions of the synthetic expression matrix:", dim(synthetic_expression))
+# 
+# # Print the first few rows of the synthetic expression matrix
+# head(synthetic_expression)
 ```
 
 # miRNA + MAD + SDE Overall survival KM plot
@@ -1775,12 +1803,12 @@ scl_common <- scl_common %>%
 
 # Function to compute p-value from Kaplan-Meier fit
 compute_p_value <- function(data, progress_free = FALSE) {
-  if (progress_free){
+  if (progress_free) {
     fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
     return(p_value)
-  } else{
+  } else {
     fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
@@ -1796,7 +1824,7 @@ set.seed(1)
 n_permutations <- 1000
 permuted_p_values <- replicate(n_permutations, {
   permuted_data <- scl_common
-  permuted_data$risk <- sample(scl_common$risk)  # Randomly permute risk labels
+  permuted_data$risk <- sample(scl_common$risk) # Randomly permute risk labels
   compute_p_value(permuted_data)
 })
 
@@ -1806,29 +1834,33 @@ perm_p_value <- mean(permuted_p_values <= observed_p_value)
 
 # Plotting the KM curve
 fit <- survfit(Surv(scl_common$time, scl_common$vital.status) ~ risk, data = scl_common)
-p1 <- ggsurvplot(fit = fit,
-           data = scl_common,
-           conf.int = TRUE,
-           pval = TRUE,
-           pval.size = 5,
-           pval.coord = c(3500, 0.8),
-           palette = c("red", "blue"),
-           risk.table = FALSE,
-           censor.shape = "|",
-           size = 1.5, 
-           censor.size = 4.5,
-           xlab = "Time (days)",
-           legend.title = "Risk",
-           title = "Single Dataset | miRMS",
-           legend.labs = c("High risk", "Low risk"),
-           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
-                 axis.title = element_text(size = 18, face = "bold"),
-                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
-                 axis.text = element_text(size = 16),
-                 axis.ticks = element_line(linewidth = 1.25),
-                 legend.title = element_text(size = 16, face = "bold"),
-                 legend.text = element_text(size = 14),
-                 panel.background = element_blank()))
+p1 <- ggsurvplot(
+  fit = fit,
+  data = scl_common,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(3500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Risk",
+  title = "Single Dataset | miRMS",
+  legend.labs = c("High risk", "Low risk"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
 
 
 # Saving as PNG
@@ -1842,10 +1874,10 @@ ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_d.svg", dev
 ```{r miRNA alone overall survival KM plot}
 # Original data risk score
 # First, let's assume your coefficients for each gene are stored in a vector like this:
-coef <- c(-0.0175147427192908,-0.813624034216674,-0.0808400629378394,-0.175783984675757,0.59820613021554)
+coef <- c(-0.0175147427192908, -0.813624034216674, -0.0808400629378394, -0.175783984675757, 0.59820613021554)
 
 # And your data frame `data` has columns named after the genes
-genes <- c("znf460","tfrc","fam83f","samd12","grin2b")
+genes <- c("znf460", "tfrc", "fam83f", "samd12", "grin2b")
 
 scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
 median_risk <- median(scl_common$risk_score)
@@ -1856,12 +1888,12 @@ scl_common <- scl_common %>%
 
 # Function to compute p-value from Kaplan-Meier fit
 compute_p_value <- function(data, progress_free = FALSE) {
-  if (progress_free){
+  if (progress_free) {
     fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
     return(p_value)
-  } else{
+  } else {
     fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
@@ -1875,29 +1907,33 @@ observed_p_value <- compute_p_value(scl_common)
 
 # Plotting the KM curve
 fit <- survfit(Surv(scl_common$time, scl_common$vital.status) ~ risk, data = scl_common)
-p1 <- ggsurvplot(fit = fit,
-           data = scl_common,
-           conf.int = TRUE,
-           pval = TRUE,
-           pval.size = 5,
-           pval.coord = c(3500, 0.8),
-           palette = c("red", "blue"),
-           risk.table = FALSE,
-           censor.shape = "|",
-           size = 1.5, 
-           censor.size = 4.5,
-           xlab = "Time (days)",
-           legend.title = "Risk",
-           title = "Single Dataset | miRNA",
-           legend.labs = c("High risk", "Low risk"),
-           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
-                 axis.title = element_text(size = 18, face = "bold"),
-                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
-                 axis.text = element_text(size = 16),
-                 axis.ticks = element_line(linewidth = 1.25),
-                 legend.title = element_text(size = 16, face = "bold"),
-                 legend.text = element_text(size = 14),
-                 panel.background = element_blank()))
+p1 <- ggsurvplot(
+  fit = fit,
+  data = scl_common,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(3500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Risk",
+  title = "Single Dataset | miRNA",
+  legend.labs = c("High risk", "Low risk"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
 
 
 # Saving as PNG
@@ -1911,10 +1947,10 @@ ggsave(p1$plot, path = "Figures/panels/", filename = "figure_a_panel_e.svg", dev
 ```{r miRNA alone progress free survival KM plot}
 # Original data risk score
 # First, let's assume your coefficients for each gene are stored in a vector like this:
-coef <- c(-0.0175147427192908,-0.813624034216674,-0.0808400629378394,-0.175783984675757,0.59820613021554)
+coef <- c(-0.0175147427192908, -0.813624034216674, -0.0808400629378394, -0.175783984675757, 0.59820613021554)
 
 # And your data frame `data` has columns named after the genes
-genes <- c("znf460","tfrc","fam83f","samd12","grin2b")
+genes <- c("znf460", "tfrc", "fam83f", "samd12", "grin2b")
 
 scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
 median_risk <- median(scl_common$risk_score)
@@ -1925,12 +1961,12 @@ scl_common <- scl_common %>%
 
 # Function to compute p-value from Kaplan-Meier fit
 compute_p_value <- function(data, progress_free = FALSE) {
-  if (progress_free){
+  if (progress_free) {
     fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
     return(p_value)
-  } else{
+  } else {
     fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
@@ -1944,29 +1980,33 @@ observed_p_value <- compute_p_value(scl_common, progress_free = TRUE)
 
 # Plotting the KM curve
 fit <- survfit(Surv(scl_common$time2, scl_common$vital.status) ~ risk, data = scl_common)
-p1 <- ggsurvplot(fit = fit,
-           data = scl_common,
-           conf.int = TRUE,
-           pval = TRUE,
-           pval.size = 5,
-           pval.coord = c(2500, 0.8),
-           palette = c("red", "blue"),
-           risk.table = FALSE,
-           censor.shape = "|",
-           size = 1.5, 
-           censor.size = 4.5,
-           xlab = "Time (days)",
-           legend.title = "Risk",
-           title = "Single Dataset | miRNA | Progress Free",
-           legend.labs = c("High risk", "Low risk"),
-           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
-                 axis.title = element_text(size = 18, face = "bold"),
-                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
-                 axis.text = element_text(size = 16),
-                 axis.ticks = element_line(linewidth = 1.25),
-                 legend.title = element_text(size = 16, face = "bold"),
-                 legend.text = element_text(size = 14),
-                 panel.background = element_blank()))
+p1 <- ggsurvplot(
+  fit = fit,
+  data = scl_common,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Risk",
+  title = "Single Dataset | miRNA | Progress Free",
+  legend.labs = c("High risk", "Low risk"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
 
 
 # Saving as PNG
@@ -1990,18 +2030,20 @@ median_risk <- median(scl_common$risk_score)
 scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
 
 scl_common <- scl_common %>%
-  select(patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
-         uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy,
-         risk_score, risk, everything())
+  select(
+    patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
+    uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy,
+    risk_score, risk, everything()
+  )
 
 # Function to compute p-value from Kaplan-Meier fit
 compute_p_value <- function(data, progress_free = FALSE) {
-  if (progress_free){
+  if (progress_free) {
     fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
     return(p_value)
-  } else{
+  } else {
     fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
@@ -2015,29 +2057,33 @@ observed_p_value <- compute_p_value(scl_common, progress_free = TRUE)
 
 # Plotting the KM curve
 fit <- survfit(Surv(scl_common$time2, scl_common$vital.status) ~ risk, data = scl_common)
-p1 <- ggsurvplot(fit = fit,
-           data = scl_common,
-           conf.int = TRUE,
-           pval = TRUE,
-           pval.size = 5,
-           pval.coord = c(2500, 0.8),
-           palette = c("red", "blue"),
-           risk.table = FALSE,
-           censor.shape = "|",
-           size = 1.5, 
-           censor.size = 4.5,
-           xlab = "Time (days)",
-           legend.title = "Risk",
-           title = "Single Dataset | miRMS | Progress Free",
-           legend.labs = c("High risk", "Low risk"),
-           ggtheme = theme(axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
-                 axis.title = element_text(size = 18, face = "bold"),
-                 plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
-                 axis.text = element_text(size = 16),
-                 axis.ticks = element_line(linewidth = 1.25),
-                 legend.title = element_text(size = 16, face = "bold"),
-                 legend.text = element_text(size = 14),
-                 panel.background = element_blank()))
+p1 <- ggsurvplot(
+  fit = fit,
+  data = scl_common,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Risk",
+  title = "Single Dataset | miRMS | Progress Free",
+  legend.labs = c("High risk", "Low risk"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
 
 
 # Saving as PNG
@@ -2057,16 +2103,18 @@ hist <- ggplot(df, aes(x = p_value)) +
   labs(x = "P-value", y = "Frequency") +
   ggtitle("1,000 Permutations | miRMS | Progress Free") +
   geom_vline(xintercept = observed_p_value, linetype = "solid", color = "red", linewidth = 1.25) +
-  theme(plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 20, face = "bold"),
-        axis.text = element_text(size = 18),
-        axis.line = element_line(color = "black", size = 1.25, lineend = "round"),
-        axis.ticks = element_line(color = "black", linewidth = 1.25),
-        panel.background = element_blank(),
-        panel.grid.major.y = element_line(color = "black", linewidth = 1.25),
-        panel.grid.major.x = element_blank())+
-  scale_y_continuous(expand = c(0,0))+
-  scale_x_continuous(expand = c(0,0))
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 20, face = "bold"),
+    axis.text = element_text(size = 18),
+    axis.line = element_line(color = "black", size = 1.25, lineend = "round"),
+    axis.ticks = element_line(color = "black", linewidth = 1.25),
+    panel.background = element_blank(),
+    panel.grid.major.y = element_line(color = "black", linewidth = 1.25),
+    panel.grid.major.x = element_blank()
+  ) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_continuous(expand = c(0, 0))
 
 hist
 
@@ -2080,10 +2128,10 @@ ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_h.svg", device
 
 # miRNA only Progress free survival permutations
 ```{r miRNA alone progress free survival KM plot}
-coef <- c(-0.0175147427192908,-0.813624034216674,-0.0808400629378394,-0.175783984675757,0.59820613021554)
+coef <- c(-0.0175147427192908, -0.813624034216674, -0.0808400629378394, -0.175783984675757, 0.59820613021554)
 
 # And your data frame `data` has columns named after the genes
-genes <- c("znf460","tfrc","fam83f","samd12","grin2b")
+genes <- c("znf460", "tfrc", "fam83f", "samd12", "grin2b")
 
 
 scl_common$risk_score <- rowSums(sapply(seq_along(genes), function(i) scl_common[, genes[i]] * coef[i]))
@@ -2091,18 +2139,20 @@ median_risk <- median(scl_common$risk_score)
 scl_common$risk <- ifelse(scl_common$risk_score > median_risk, "high", "low")
 
 scl_common <- scl_common %>%
-  select(patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
-         uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy,
-         risk_score, risk, everything())
+  select(
+    patient.id, sex, smoker, vital.status, time, time2, n.stage, m.stage,
+    uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy,
+    risk_score, risk, everything()
+  )
 
 # Function to compute p-value from Kaplan-Meier fit
 compute_p_value <- function(data, progress_free = FALSE) {
-  if (progress_free){
+  if (progress_free) {
     fit <- survfit(Surv(data$time2, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time2, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
     return(p_value)
-  } else{
+  } else {
     fit <- survfit(Surv(data$time, data$vital.status) ~ risk, data = data)
     logrank_test <- survdiff(Surv(data$time, data$vital.status) ~ risk, data = data)
     p_value <- 1 - pchisq(logrank_test$chisq, length(logrank_test$n) - 1)
@@ -2124,16 +2174,18 @@ hist <- ggplot(df, aes(x = p_value)) +
   labs(x = "P-value", y = "Frequency") +
   ggtitle("1,000 Permutations | miRNA | Progress Free") +
   geom_vline(xintercept = observed_p_value, linetype = "solid", color = "red", linewidth = 1.25) +
-  theme(plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 20, face = "bold"),
-        axis.text = element_text(size = 18),
-        axis.line = element_line(color = "black", size = 1.25, lineend = "round"),
-        axis.ticks = element_line(color = "black", linewidth = 1.25),
-        panel.background = element_blank(),
-        panel.grid.major.y = element_line(color = "black", linewidth = 1.25),
-        panel.grid.major.x = element_blank())+
-  scale_y_continuous(expand = c(0,0))+
-  scale_x_continuous(expand = c(0,0))
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 20, face = "bold"),
+    axis.text = element_text(size = 18),
+    axis.line = element_line(color = "black", size = 1.25, lineend = "round"),
+    axis.ticks = element_line(color = "black", linewidth = 1.25),
+    panel.background = element_blank(),
+    panel.grid.major.y = element_line(color = "black", linewidth = 1.25),
+    panel.grid.major.x = element_blank()
+  ) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_continuous(expand = c(0, 0))
 
 hist
 
@@ -2146,68 +2198,170 @@ ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_i.svg", device
 ```
 
 
-# Attempt to find other datasets
+# SCLCCellMinerCDB Datasets
 ```{r sclccellminercdb cell lines}
 # Using SCLCCellMinerCDB Cell lines to attempt to do that
 cell_lines <- read.csv("Data/data_SCLC NCI-DTP_exp.txt", sep = "\t")
 cell_lines <- cell_lines %>%
-  select(-TranscriptClusterID, -UNIT_ID, -GeneName, -GeneAccession, -EntrezID, -Chromosome, -Cytoband, -Start, -Stop, -Strand, -CrossHybridization, -ProbesetType)
-
-# Generating the survival distribution from our existing dataset
-surv_model <- survfit(Surv(time, vital.status) ~ 1, data = scl_common)
-surv_distribution <- summary(surv_model)$surv
-
-# Now using the survival distribution to add vital.status and survival times to the cell line data
-# Assuming you have a vector of survival times and statuses in the 'surv_times' and 'surv_statuses' objects
-
-# Number of cell lines
-num_cell_lines <- ncol(cell_lines) - 1
-
-
-# Number of synthetic datasets to generate
-num_datasets <- 1000
-
-# Number of synthetic times and statuses to generate for each dataset
-num_synthetic <- 1000
-
-
-# Create an empty list to store the synthetic survival data for each dataset
-synthetic_survival_data <- vector("list", length = num_datasets)
-
+  select(
+    -TranscriptClusterID, -UNIT_ID, -GeneName, -GeneAccession, -EntrezID,
+    -Chromosome, -Cytoband, -Start, -Stop, -Strand, -CrossHybridization,
+    -ProbesetType
+  )
 
 rownames(cell_lines) <- cell_lines$GeneSymbol
-cell_lines_sub <- cell_lines %>% select(-GeneSymbol)
-
-# Generate synthetic survival times and statuses for each dataset and each cell line
-for (i in 1:num_datasets) {
-  synthetic_times <- replicate(num_synthetic, sample(surv_times, size = num_cell_lines, replace = TRUE))
-  synthetic_statuses <- replicate(num_synthetic, sample(surv_statuses, size = num_cell_lines, replace = TRUE))
-  
-  # Create a new dataframe with the synthetic survival data
-  synthetic_survival_data[[i]] <- data.frame(
-    cell_line = colnames(cell_lines_sub),  # Assuming your gene expression matrix has column names for cell lines
-    time = synthetic_times,
-    vital.status = synthetic_statuses
-  )
-}
-
-# surv_times <- scl_common$time
-# surv_statuses <- scl_common$vital.status
-# 
-# # Generate synthetic survival times and statuses for each cell line
-# synthetic_times <- sample(surv_times, size = num_cell_lines, replace = TRUE)
-# synthetic_statuses <- sample(surv_statuses, size = num_cell_lines, replace = TRUE)
-# 
-# # Create a new dataframe with the synthetic survival data
-# cell_lines_sub <- cell_lines %>% select(-GeneSymbol)
-# synthetic_survival_data <- data.frame(
-#   cell_line = colnames(cell_lines_sub),  # Assuming your gene expression matrix has column names for cell lines
-#   time = synthetic_times,
-#   vital.status = synthetic_statuses
-# )
+cell_lines <- cell_lines %>%
+  select(-GeneSymbol, -COR.L279)
 
 
+# Generating synthetic survival data
+
+# Step 2: Analyze reference dataset
+# Fit a survival model using survfit (Kaplan-Meier estimator or other methods)
+surv_model <- survfit(Surv(time, vital.status) ~ 1, data = scl_common)
+
+# Extract survival probabilities and time points from the survival model
+surv_prob <- surv_model$surv
+time_points <- surv_model$time
+
+
+# Step 4: Simulate survival times
+n <- 67 # Number of individuals to simulate
+simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
+
+# Step 5: Simulate censoring status
+# Assuming 18% survival rate after 5 years based on American Cancer Society for regional staging of
+# cancer. We are using regional survival rate because the majority of patients in our dataset have regional characteristics. (https://www.cancer.org/cancer/types/lung-cancer/detection-diagnosis-staging/survival-rates.html)
+
+# Survival rate at 5 years
+survival_rate <- 0.18
+
+# Calculate the number of censored observations
+n_censored <- round(survival_rate * n)
+
+# Generate censoring status
+censoring_status <- rep(1, n) # Initialize with 1 (event)
+censoring_status[sample(1:n, n_censored)] <- 0 # Assign 0 to randomly selected censored observations
+
+# Print the proportion of censored observations
+prop_censored <- sum(censoring_status == 0) / n
+cat("Proportion of censored observations:", prop_censored)
+
+# Step 6: Create a simulated dataset
+simulated_data <- data.frame(time = simulated_times, status = censoring_status)
+
+
+synthetic_expression <- synthetic_expression %>%
+  as.data.frame(synthetic_expression) %>%
+  mutate(time = simulated_data$time) %>%
+  mutate(status = simulated_data$status)
+
+rownames(synthetic_expression) <- colnames(cell_lines)
 ```
 
+```{r creating lots of synthetic survival datasets}
+simulate_survival_data <- function(reference_data, n, survival_rate) {
+  # Step 2: Fit a survival model using survfit
+  surv_model <- survfit(Surv(time, vital.status) ~ 1, data = reference_data)
+  surv_prob <- surv_model$surv
+  time_points <- surv_model$time
+
+  # Step 4: Simulate survival times
+  simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
+
+  # Step 5: Simulate censoring status
+  n_censored <- round(survival_rate * n)
+  censoring_status <- rep(1, n)
+  censoring_status[sample(1:n, n_censored)] <- 0
+
+  # Step 6: Create a simulated dataset
+  simulated_data <- data.frame(time = simulated_times, status = censoring_status)
+
+  return(simulated_data)
+}
+
+cell_lines <- read.csv("Data/data_SCLC NCI-DTP_exp.txt", sep = "\t")
+cell_lines <- cell_lines %>%
+  select(
+    -TranscriptClusterID, -UNIT_ID, -GeneName, -GeneAccession,
+    -EntrezID, -Chromosome, -Cytoband, -Start, -Stop, -Strand,
+    -CrossHybridization, -ProbesetType
+  )
+rownames(cell_lines) <- cell_lines$GeneSymbol
+cell_lines <- cell_lines %>% select(-GeneSymbol, -COR.L279)
 
 
+# Now using the function
+reference_data <- scl_common # Replace with your reference dataset
+n <- 67
+survival_rate <- 0.18
+
+simulated_data <- simulate_survival_data(reference_data, n, survival_rate)
+
+# Creating several simulated datasets
+n_datasets <- 1000
+simulated_datasets <- list()
+
+for (i in 1:n_datasets) {
+  simulated_datasets[[i]] <- simulate_survival_data(reference_data, n, survival_rate)
+}
+
+
+
+# Making synthetic gene profiles
+generate_synthetic_expression <- function(data, sample = TRUE) {
+  num_cell_lines <- ncol(data)
+  num_genes <- nrow(data)
+  
+  mean_expression <- apply(data, 1, mean)
+  sd_expression <- apply(data, 1, sd)
+  
+  if (sample) {
+    # Generate random variation for mean and standard deviation up to 20%
+    mean_variation <- runif(num_genes, min = -0.2, max = 0.2)
+    sd_variation <- runif(num_genes, min = -0.2, max = 0.2)
+    
+    mean_expression <- mean_expression + mean_expression * mean_variation
+    sd_expression <- sd_expression + sd_expression * sd_variation
+  }
+  
+  synthetic_expression <- matrix(
+    rnorm(num_cell_lines * num_genes, mean_expression, sd_expression),
+    nrow = num_genes,
+    ncol = num_cell_lines,
+    dimnames = list(rownames(data), colnames(data))
+  )
+  
+  synthetic_expression <- t(synthetic_expression)
+  colnames(synthetic_expression) <- tolower(colnames(synthetic_expression))
+  
+  return(synthetic_expression)
+}
+
+simulated_gene_datasets <- list()
+
+for (i in 1:n_datasets){
+  simulated_gene_datasets[[i]] <- generate_synthetic_expression(cell_lines, sample = TRUE)
+}
+
+finished_datasets <- list()
+
+for (i in 1:n_datasets){
+  current_gene_dataset <- simulated_gene_datasets[[i]]
+  current_survival_dataset <- simulated_datasets[[i]]
+  finished_dataset <- current_gene_dataset %>%
+  as.data.frame(current_gene_dataset) %>%
+  mutate(time = current_survival_dataset$time) %>%
+  mutate(status = current_survival_dataset$status)
+  rownames(finished_dataset) <- colnames(cell_lines)
+  finished_datasets[[i]] <- finished_dataset
+}
+
+# Combining the synthetic gene expression and survival times together
+synthetic_expression <- synthetic_expression %>%
+  as.data.frame(synthetic_expression) %>%
+  mutate(time = simulated_data$time) %>%
+  mutate(status = simulated_data$status)
+
+rownames(synthetic_expression) <- colnames(cell_lines)
+```
