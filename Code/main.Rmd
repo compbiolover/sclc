@@ -2198,6 +2198,192 @@ ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_i.svg", device
 ```
 
 
+```{r trying to simulate }
+genes <- c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
+new_gene_dataset <- read.csv("Data/GSE149507_geo_expr.csv")
+new_gene_dataset <- new_gene_dataset %>%
+  filter(!is.na(Symbol))
+rownames(new_gene_dataset) <- new_gene_dataset$Symbol
+new_gene_dataset <- new_gene_dataset %>%
+  select(-EntrezID, -Symbol) %>%
+  select(contains("_ca")) %>%
+  t() %>%
+  as.data.frame()
+
+
+surv_model <- coxph(Surv(time, vital.status) ~ tfrc + fam83f + samd12 + grin2b + dlk1 + gng13, data = scl_common)
+
+
+# Extract the estimated survival probabilities and time points
+surv_prob <- survfit(surv_model)$surv
+time_points <- survfit(surv_model)$time
+
+
+# Simulate survival times for the new gene expression dataset
+n <- nrow(new_gene_dataset)  # Number of individuals in the new dataset
+simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
+
+# Optionally, simulate censoring based on a desired censoring rate
+censoring_rate <- 0.07  # Desired censoring rate
+censoring_status <- ifelse(runif(n) < censoring_rate, 0, 1)  # 0 represents censoring, 1 represents event
+
+
+# Create a simulated dataset with gene expression and simulated survival information
+simulated_dataset <- cbind(new_gene_dataset, time = simulated_times, status = censoring_status)
+colnames(simulated_dataset) <- tolower(colnames(simulated_dataset))
+
+# Now testing the signature
+cox_mod_test <- coxph(data = simulated_dataset, Surv(time, status) ~ tfrc + fam83f + samd12 + grin2b + dlk1 + gng13) # C-index of 0.69
+
+
+
+# Now loading the next validation dataset (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE110853 [GEO: GSE110853])
+# next_test_df <- read.csv("Data/GSE110853_TPM_matrix_GEO.csv")
+# next_test_df <- next_test_df %>%
+#   filter(row != 6020)
+# next_test_df <- next_test_df %>%
+#   filter(row != 11468)
+# rownames(next_test_df) <- next_test_df$hgnc_symbol
+# next_test_df <- next_test_df %>%
+#   select(-row, -hgnc_symbol)
+# 
+# next_test_df <- as.data.frame(next_test_df)
+# next_test_df <- t(next_test_df)
+
+second_test_df <- read.csv("Data/GSE110853_TPM_finished_matrix_GEO.csv")
+rownames(second_test_df) <- second_test_df$X
+second_test_df <- second_test_df %>%
+  select(-X)
+
+# Extract the estimated survival probabilities and time points
+surv_prob <- survfit(surv_model)$surv
+time_points <- survfit(surv_model)$time
+
+
+# Simulate survival times for the new gene expression dataset
+n <- nrow(next_test_df)  # Number of individuals in the new dataset
+simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
+
+# Optionally, simulate censoring based on a desired censoring rate
+censoring_rate <- 0.07  # Desired censoring rate
+censoring_status <- ifelse(runif(n) < censoring_rate, 0, 1)  # 0 represents censoring, 1 represents event
+
+
+# Create a simulated dataset with gene expression and simulated survival information
+simulated_dataset2 <- data.frame(second_test_df, time = simulated_times, status = censoring_status)
+colnames(simulated_dataset2) <- tolower(colnames(simulated_dataset2))
+
+# Now testing the signature. grin2b isn't in this dataset so I can only test the other genes
+cox_mod_test2 <- coxph(data = simulated_dataset2, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13) # 0.629
+
+
+# 10 fold cv
+# Set the number of folds for cross-validation
+# k <- 10
+# 
+# # Create an empty vector to store the cross-validated predictions
+# cv_predictions <- vector("list", length = k)
+# 
+# # Perform k-fold cross-validation
+# set.seed(123)  # Set a seed for reproducibility
+# folds <- cut(seq(nrow(simulated_dataset2)), breaks = k, labels = FALSE)
+# for (i in 1:k) {
+#   # Create the training and testing sets
+#   train_data <- simulated_dataset2[folds != i, ]
+#   test_data <- simulated_dataset2[folds == i, ]
+#   
+#   # Fit the Cox proportional hazards model on the training data
+#   model <- coxph(Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13, data = train_data)
+#   
+#   # Make predictions on the testing data
+#   predictions <- predict(model, newdata = test_data, type = "expected")
+#   
+#   # Store the predictions in the corresponding fold index
+#   cv_predictions[[i]] <- predictions
+# }
+# 
+# # Combine the cross-validated predictions into a single object
+# cv_predictions <- do.call(rbind, cv_predictions)
+# 
+# # Evaluate the performance of the cross-validated predictions
+# # (e.g., calculate the concordance index or other relevant metrics)
+# concordance <- survival::concordance(simulated_dataset2$time, cv_predictions, simulated_dataset2$status)
+# print(paste("Concordance Index:", concordance))
+
+
+# Set the number of folds for cross-validation
+k <- 10
+
+# Create an empty vector to store the concordance indices
+concordance_indices <- vector("numeric", length = k)
+
+# Perform k-fold cross-validation
+set.seed(123)  # Set a seed for reproducibility
+folds <- cut(seq(nrow(simulated_dataset2)), breaks = k, labels = FALSE)
+for (i in 1:k) {
+  # Create the training and testing sets
+  train_data <- simulated_dataset2[folds != i, ]
+  test_data <- simulated_dataset2[folds == i, ]
+  
+  # Fit the Cox proportional hazards model on the training data
+  model <- coxph(Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13, data = train_data)
+  
+  # Make predictions on the testing data
+  predicted_survival <- predict(model, newdata = test_data, type = "expected")
+  
+  # Calculate the concordance index
+  concordance_indices[i] <- concordance(survival::Surv(test_data$time, test_data$status), predicted_survival)
+}
+
+# Calculate the average concordance index
+average_concordance <- mean(concordance_indices)
+
+print(paste("Average Concordance Index:", average_concordance))
+
+
+
+# 3rd dataset processing
+# third_df <- read.csv("Data/GSE60052_79tumor.7normal.normalized.log2.data.Rda.csv")
+# third_df <- third_df %>%
+#   filter(gene != "1-Mar") %>%
+#   filter(gene != "2-Mar")
+# third_df <- third_df %>%
+#   t() %>%
+#   as.data.frame()
+# colnames(third_df) <- third_df["gene",]
+# third_df <- third_df %>%
+#   slice(2:87) %>%
+#  filter(!grepl(".normal", rownames(.)))
+# 
+# colnames(third_df) <- tolower(colnames(third_df))
+
+
+third_df <- read.csv("Data/GSE60052_79tumor.7normal.normalized.log2.data.Rda_finished.csv")
+rownames(third_df) <- third_df$X
+third_df <- third_df %>%
+  select(-X)
+
+colnames(third_df) <- tolower(colnames(third_df))
+
+# Simulate survival times for the new gene expression dataset
+n <- nrow(third_df)  # Number of individuals in the new dataset
+simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
+
+# Optionally, simulate censoring based on a desired censoring rate
+censoring_rate <- 0.07  # Desired censoring rate
+censoring_status <- ifelse(runif(n) < censoring_rate, 0, 1)  # 0 represents censoring, 1 represents event
+
+
+# Create a simulated dataset with gene expression and simulated survival information
+simulated_dataset3 <- data.frame(third_df, time = simulated_times, status = censoring_status)
+simulated_dataset3 <- simulated_dataset3 %>%
+  select(!contains("hsa.mir."))
+
+# Now testing the signature.
+cox_mod_test3 <- coxph(data = simulated_dataset3, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + grin2b + gng13)
+```
+
+
 # SCLCCellMinerCDB Datasets
 ```{r sclccellminercdb cell lines}
 # Using SCLCCellMinerCDB Cell lines to attempt to do that
@@ -2404,6 +2590,7 @@ cv_performance <- sapply(cox_outputs, function(x) x$CV$cvm[x$CV$lambda == x$CV$l
 
 # calculate the mean performance across all folds
 mean_performance <- mean(cv_performance) # 0.7204482 with the 6 active perdictors from mad + sde + miRNA
+median_performance <- median(cv_performance)
 ```
 
 
