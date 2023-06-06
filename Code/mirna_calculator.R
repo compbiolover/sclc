@@ -51,7 +51,7 @@ mirna_calculator <- function(ts_org = "Human",
   if (length(common_mirnas) > max_mirnas) {
     common_mirnas <- common_mirnas[1:max_mirnas]
   } else if (print_ts_targets) {
-    cat("There are fewer target mirnas available than your input. Using the largest number of common mirnas for this submission to TargetScan\n")
+    cat("There are fewer target miRNAs available than your input. Using the largest number of common miRNAs for this submission to TargetScan\n")
     cat("The number of common mirnas is:", length(common_mirnas), "\n")
   }
 
@@ -69,7 +69,7 @@ mirna_calculator <- function(ts_org = "Human",
           mutate(miRNA_name_final = m)
       },
       error = function(e) {
-        message(paste0("Error: ", e$message, ". Moving to next miRNA..."))
+        message(paste0("Error: ", e$message, ". Moving to next miRNA"))
       }
     )
     result
