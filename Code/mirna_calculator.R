@@ -28,12 +28,12 @@ mirna_calculator <- function(ts_org = "Human",
   mirmap_mirnas <- read.csv("Data/mirna_data/mirmap_mirnas.csv", sep = ",")
 
   # Read and filter cancer data
-  cancer_data <- read.csv(file = if (cancer_up ) "Data/mirna_data/dbdemc_2.0_high.txt" else "Data/mirna_data/dbdemc_2.0_low.txt", sep = "\t")
-  if (cancer_up == TRUE && status == "up"){
+  cancer_data <- read.csv(file = if (cancer_up) "Data/mirna_data/dbdemc_2.0_high.txt" else "Data/mirna_data/dbdemc_2.0_low.txt", sep = "\t")
+  if (cancer_up == TRUE && status == "up") {
     cancer_data <- cancer_data %>%
       filter(Cancer.Type == cancer_type1) %>%
       filter(Status == "UP")
-  }else if (cancer_up == TRUE && status == "down"){
+  } else if (cancer_up == TRUE && status == "down") {
     cancer_data <- cancer_data %>%
       filter(Cancer.Type == cancer_type1) %>%
       filter(Status == "DOWN")
@@ -55,70 +55,25 @@ mirna_calculator <- function(ts_org = "Human",
     cat("The number of common mirnas is:", length(common_mirnas), "\n")
   }
 
-
-
-  # Get TargetScan results
-  # mirna_targets <- future_map(common_mirnas, function(m) {
-  #   hoardeR::targetScan(
-  #     mirna = m,
-  #     species = ts_org,
-  #     release = ts_version,
-  #     maxOut = max_mir_targets
-  #   ) %>%
-  #     mutate(miRNA_name_final = m)
-  # })
-  
-  
   # TargetScan function with try-catch to help manage no table returned errors
   mirna_targets <- future_map(common_mirnas, function(m) {
     result <- NULL
-    tryCatch({
-      result <- hoardeR::targetScan(
-        mirna = m,
-        species = ts_org,
-        release = ts_version,
-        maxOut = max_mir_targets
-      ) %>%
-        mutate(miRNA_name_final = m)
-    }, error = function(e) {
-      message(paste0("Error: ", e$message, ". Moving to next miRNA..."))
-    })
+    tryCatch(
+      {
+        result <- hoardeR::targetScan(
+          mirna = m,
+          species = ts_org,
+          release = ts_version,
+          maxOut = max_mir_targets
+        ) %>%
+          mutate(miRNA_name_final = m)
+      },
+      error = function(e) {
+        message(paste0("Error: ", e$message, ". Moving to next miRNA..."))
+      }
+    )
     result
   })
-  
-  
-  # TargetScan function with try-catch to help manage timeout errors
-  # mirna_targets <- future_map(common_mirnas, function(m) {
-  #   success <- FALSE
-  #   result <- NULL
-  #   while (!success) {
-  #     tryCatch(
-  #       {
-  #         result <- hoardeR::targetScan(
-  #           mirna = m,
-  #           species = ts_org,
-  #           release = ts_version,
-  #           maxOut = max_mir_targets
-  #         ) %>%
-  #           mutate(miRNA_name_final = m)
-  #         success <- TRUE
-  #       },
-  #       error = function(e) {
-  #         if (grepl("Timeout", e$message)) {
-  #           message(paste0("Timeout error for miRNA ", m, ": ", e$message))
-  #         } else {
-  #           message(paste0("Error for miRNA ", m, ": ", e$message))
-  #           success <- TRUE
-  #         }
-  #       }
-  #     )
-  #   }
-  #   return(result)
-  # })
-  
-  
-
-
 
   # Simplify TargetScan results
   total_list <- lapply(mirna_targets, function(df) {
@@ -131,8 +86,8 @@ mirna_calculator <- function(ts_org = "Human",
       NULL
     }
   })
-  
-  
+
+
   # Removing any lists in total_list that are NULL (i.e. aren't found in TargetScan)
   total_list <- total_list[!sapply(total_list, is.null)]
 
@@ -144,39 +99,32 @@ mirna_calculator <- function(ts_org = "Human",
     dimnames = list(all_genes_for_score, all_mirs_for_score)
   )
 
+
   # Calculate scores
-  # for (i in seq_along(total_list)) {
-  #   df <- total_list[[i]]
-  #   for (j in seq_len(nrow(df))) {
-  #     gene <- df[j, "gene_list"]
-  #     mirna <- df[j, "mirna_list"]
-  #     if (gene %in% rownames(mirna_score) && mirna %in% colnames(mirna_score)) {
-  #     mirna_score[gene, mirna] <- mirna_score[gene, mirna] + 1
-  #     }
-  #   }
-  # }
-
-
-  # Calculate scores  
   for (i in seq_along(total_list)) {
     df <- total_list[[i]]
     for (j in seq_len(nrow(df))) {
       gene <- df[j, "gene_list"]
       mirna <- df[j, "mirna_list"]
       if (!is.na(gene)) {
-        tryCatch({
-          mirna_score[gene, mirna] <- mirna_score[gene, mirna] + 1
-        }, error = function(e) {
-          message(paste("Error with gene", gene, "and miRNA", mirna, ":",
-                        conditionMessage(e)))
-        })
+        tryCatch(
+          {
+            mirna_score[gene, mirna] <- mirna_score[gene, mirna] + 1
+          },
+          error = function(e) {
+            message(paste(
+              "Error with gene", gene, "and miRNA", mirna, ":",
+              conditionMessage(e)
+            ))
+          }
+        )
       }
     }
   }
-  
-  
-  
-  
+
+
+
+
   # Save score matrix
   if (save_mirna_genes_mat) {
     write.csv(mirna_score, file = mirna_genes_mat_name)
