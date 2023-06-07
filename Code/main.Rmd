@@ -674,6 +674,58 @@ for (m in mirna_num[1:4]) {
 }
 ```
 
+# miRNA scores with site conservation info
+```{r mirna score with conservation info}
+# Now sending those miRNAs to TargetScan with conservation info
+mirna_num <- seq(100, 800, 100)
+mirna_target_num <- seq(2, 8, 1)
+for (m in mirna_num[1:4]) {
+  for (t in mirna_target_num[1:7]) {
+    mirna_genes <- mirna_calculator(ts_org = "Human", ts_version = "8.0", max_mir_targets = t, cancer_up = TRUE, cancer_type1 = "lung cancer", print_ts_targets = FALSE, status = "up", max_mirnas = m, include_sites_score = TRUE, mirna_genes_mat_name = paste0("Outputs/mirna/mirna_genes_mat_", m, "_mirnas_", t, "_targets_up_site_score.csv"), mirna_ranking_name = paste0("Outputs/mirna/mirna_genes_", m, "_mirnas_", t, "_targets_up_site_score.csv"), mirna_ranking_name_rds = paste0("Outputs/mirna/mirna_genes_", m, "_mirnas_", t, "_targets_up_site_score.rds"), mirna_genes_mat_name_rds = paste0("Outputs/mirna/mirna_genes_mat_", m, "_mirnas_", t, "_targets_up_site_score.rds"), save_site_score = TRUE, mirna_site_score_name = paste0("Outputs/mirna/mirna_genes_mat_", m, "_mirnas_", t, "_targets_up_site_score_output.csv"))
+  }
+}
+```
+
+# Determining highest scoring miRNAs from our best miRNA gene signature
+```{r best miRNA score from gene signature}
+mirna_genes <- readRDS("Outputs/mirna/rds/mirna_genes_200_mirnas_5_targets_up_.rds")
+mirna_genes_site_score <- read.csv("Outputs/mirna/mirna_genes_mat_200_mirnas_5_targets_up_site_score_output.csv")
+
+tfrc_mirnas <- mirna_genes_site_score %>%
+  mutate(gene = tolower(gene)) %>%
+  filter(gene == "tfrc")
+
+
+fam83f_mirnas <- mirna_genes_site_score %>%
+  mutate(gene = tolower(gene)) %>%
+  filter(gene == "fam83f")
+
+
+samd12_mirnas <- mirna_genes_site_score %>%
+  mutate(gene = tolower(gene)) %>%
+  filter(gene == "samd12")
+
+
+grin2b_mirnas <- mirna_genes_site_score %>%
+  mutate(gene = tolower(gene)) %>%
+  filter(gene == "grin2b")
+
+
+dlk1_mirnas <- mirna_genes_site_score %>%
+  mutate(gene = tolower(gene)) %>%
+  filter(gene == "dlk1")
+
+gng13_mirnas <- mirna_genes_site_score %>%
+  mutate(gene = tolower(gene)) %>%
+  filter(gene == "gng13")
+
+
+
+cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"))
+rownames(cox_preds) <- cox_preds$preds
+```
+
+
 ## Combinations of metrics
 # MAD + SDE
 ```{r mad + sde}
@@ -2198,7 +2250,7 @@ ggsave(hist, path = "Figures/panels/", filename = "figure_a_panel_i.svg", device
 ```
 
 
-```{r trying to simulate }
+```{r trying to simulate}
 genes <- c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13")
 new_gene_dataset <- read.csv("Data/GSE149507_geo_expr.csv")
 new_gene_dataset <- new_gene_dataset %>%
@@ -2232,9 +2284,52 @@ censoring_status <- ifelse(runif(n) < censoring_rate, 0, 1)  # 0 represents cens
 simulated_dataset <- cbind(new_gene_dataset, time = simulated_times, status = censoring_status)
 colnames(simulated_dataset) <- tolower(colnames(simulated_dataset))
 
+
 # Now testing the signature
 cox_mod_test <- coxph(data = simulated_dataset, Surv(time, status) ~ tfrc + fam83f + samd12 + grin2b + dlk1 + gng13) # C-index of 0.69
 
+# 10 fold CV
+cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"))
+rownames(cox_preds) <- cox_preds$preds
+simulated_dataset_glmnet <- simulated_dataset
+colnames(simulated_dataset_glmnet)[20194] <- "vital.status"
+
+# current_cox <- cox_model_fitter( C-index of 0.7037 
+#   my_seed = 1234,
+#   my_alpha = 0,
+#   progress_free = FALSE,
+#   sim_testing = TRUE,
+#   cox_predictors = cox_preds,
+#   cox_df = simulated_dataset_glmnet,
+#   gene_num = 6,
+#   save_coefs = FALSE,
+#   tumor_stage = FALSE,
+#   tumor_n = FALSE,
+#   tumor_m = FALSE,
+#   calc_auc = FALSE,
+#   cat_preds = FALSE,
+#   n_folds = 5
+# )
+
+
+
+
+current_cox <- cox_model_fitter( 
+  my_seed = 1234,
+  my_alpha = 0,
+  progress_free = FALSE,
+  sim_testing = TRUE,
+  cox_predictors = cox_preds,
+  cox_df = simulated_dataset_glmnet,
+  gene_num = 6,
+  save_coefs = FALSE,
+  tumor_stage = FALSE,
+  tumor_n = FALSE,
+  tumor_m = FALSE,
+  calc_auc = FALSE,
+  cat_preds = FALSE,
+  n_folds = 5
+)
 
 
 # Now loading the next validation dataset (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE110853 [GEO: GSE110853])
@@ -2265,7 +2360,7 @@ n <- nrow(next_test_df)  # Number of individuals in the new dataset
 simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
 
 # Optionally, simulate censoring based on a desired censoring rate
-censoring_rate <- 0.07  # Desired censoring rate
+censoring_rate <- 0.361  # Desired censoring rate
 censoring_status <- ifelse(runif(n) < censoring_rate, 0, 1)  # 0 represents censoring, 1 represents event
 
 
@@ -2274,90 +2369,74 @@ simulated_dataset2 <- data.frame(second_test_df, time = simulated_times, status 
 colnames(simulated_dataset2) <- tolower(colnames(simulated_dataset2))
 
 # Now testing the signature. grin2b isn't in this dataset so I can only test the other genes
-cox_mod_test2 <- coxph(data = simulated_dataset2, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13) # 0.629
+cox_mod_test2 <- coxph(data = simulated_dataset2, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13) # 0.629 for 7% survival rate, 0.744 for original dataset censoring rate (36%)
+
+simulated_dataset2_glmnet <- simulated_dataset2
+colnames(simulated_dataset2_glmnet)[22282] <- "vital.status"
+
+# 5 fold cv (0.7368 with seed 123, 0.6211 with seed 1685733101)
+cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "dlk1", "gng13"))
+rownames(cox_preds) <- cox_preds$preds
+current_cox <- cox_model_fitter(
+  my_seed = 1685733101,
+  my_alpha = 0,
+  sim_testing = TRUE,
+  progress_free = FALSE,
+  cox_predictors = cox_preds,
+  cox_df = simulated_dataset2_glmnet,
+  gene_num = 5,
+  save_coefs = FALSE,
+  tumor_stage = FALSE,
+  tumor_n = FALSE,
+  tumor_m = FALSE,
+  calc_auc = FALSE,
+  cat_preds = FALSE,
+  n_folds = 5
+)
 
 
-# 10 fold cv
-# Set the number of folds for cross-validation
-# k <- 10
-# 
-# # Create an empty vector to store the cross-validated predictions
-# cv_predictions <- vector("list", length = k)
-# 
-# # Perform k-fold cross-validation
-# set.seed(123)  # Set a seed for reproducibility
-# folds <- cut(seq(nrow(simulated_dataset2)), breaks = k, labels = FALSE)
-# for (i in 1:k) {
-#   # Create the training and testing sets
-#   train_data <- simulated_dataset2[folds != i, ]
-#   test_data <- simulated_dataset2[folds == i, ]
-#   
-#   # Fit the Cox proportional hazards model on the training data
-#   model <- coxph(Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13, data = train_data)
-#   
-#   # Make predictions on the testing data
-#   predictions <- predict(model, newdata = test_data, type = "expected")
-#   
-#   # Store the predictions in the corresponding fold index
-#   cv_predictions[[i]] <- predictions
-# }
-# 
-# # Combine the cross-validated predictions into a single object
-# cv_predictions <- do.call(rbind, cv_predictions)
-# 
-# # Evaluate the performance of the cross-validated predictions
-# # (e.g., calculate the concordance index or other relevant metrics)
-# concordance <- survival::concordance(simulated_dataset2$time, cv_predictions, simulated_dataset2$status)
-# print(paste("Concordance Index:", concordance))
+# Now testing many random seeds to try and minimize bias of seed selection and get a fair view of
+# performance
 
+seeds <- numeric()
 
-# Set the number of folds for cross-validation
-k <- 10
-
-# Create an empty vector to store the concordance indices
-concordance_indices <- vector("numeric", length = k)
-
-# Perform k-fold cross-validation
-set.seed(123)  # Set a seed for reproducibility
-folds <- cut(seq(nrow(simulated_dataset2)), breaks = k, labels = FALSE)
-for (i in 1:k) {
-  # Create the training and testing sets
-  train_data <- simulated_dataset2[folds != i, ]
-  test_data <- simulated_dataset2[folds == i, ]
-  
-  # Fit the Cox proportional hazards model on the training data
-  model <- coxph(Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13, data = train_data)
-  
-  # Make predictions on the testing data
-  predicted_survival <- predict(model, newdata = test_data, type = "expected")
-  
-  # Calculate the concordance index
-  concordance_indices[i] <- concordance(survival::Surv(test_data$time, test_data$status), predicted_survival)
+for (n in 1:1000){
+  current_seed <- as.integer(runif(1, min = 1e6, max = 1e9))
+  seeds[[n]] <- current_seed
 }
 
-# Calculate the average concordance index
-average_concordance <- mean(concordance_indices)
+cox_outputs <- list()
+counter <- 1
+for (s in seeds){
+  current_cox <- cox_model_fitter(
+  my_seed = s,
+  my_alpha = 0,
+  sim_testing = TRUE,
+  progress_free = FALSE,
+  cox_predictors = cox_preds,
+  cox_df = simulated_dataset2_glmnet,
+  gene_num = 5,
+  save_coefs = FALSE,
+  tumor_stage = FALSE,
+  tumor_n = FALSE,
+  tumor_m = FALSE,
+  calc_auc = FALSE,
+  cat_preds = FALSE,
+  n_folds = 5
+)
+  cox_outputs[[counter]] <- current_cox
+  counter <- counter + 1
+}
 
-print(paste("Average Concordance Index:", average_concordance))
-
+c_indicies <- numeric()
+for (n in 1:length(cox_outputs)){
+  current_cox <- cox_outputs[[n]]
+  c_index <- current_cox$CV$cvm[current_cox$CV$index[1]]
+  c_indicies[[n]] <- c_index
+}
 
 
 # 3rd dataset processing
-# third_df <- read.csv("Data/GSE60052_79tumor.7normal.normalized.log2.data.Rda.csv")
-# third_df <- third_df %>%
-#   filter(gene != "1-Mar") %>%
-#   filter(gene != "2-Mar")
-# third_df <- third_df %>%
-#   t() %>%
-#   as.data.frame()
-# colnames(third_df) <- third_df["gene",]
-# third_df <- third_df %>%
-#   slice(2:87) %>%
-#  filter(!grepl(".normal", rownames(.)))
-# 
-# colnames(third_df) <- tolower(colnames(third_df))
-
-
 third_df <- read.csv("Data/GSE60052_79tumor.7normal.normalized.log2.data.Rda_finished.csv")
 rownames(third_df) <- third_df$X
 third_df <- third_df %>%
@@ -2370,7 +2449,7 @@ n <- nrow(third_df)  # Number of individuals in the new dataset
 simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
 
 # Optionally, simulate censoring based on a desired censoring rate
-censoring_rate <- 0.07  # Desired censoring rate
+censoring_rate <- 0.361  # Desired censoring rate
 censoring_status <- ifelse(runif(n) < censoring_rate, 0, 1)  # 0 represents censoring, 1 represents event
 
 
@@ -2380,7 +2459,41 @@ simulated_dataset3 <- simulated_dataset3 %>%
   select(!contains("hsa.mir."))
 
 # Now testing the signature.
-cox_mod_test3 <- coxph(data = simulated_dataset3, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + grin2b + gng13)
+cox_mod_test3 <- coxph(data = simulated_dataset3, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + grin2b + gng13) # 0.615 C-index on initial dataset censoring rate 
+
+# Trying bootstrappping
+# Assuming you have a dataset called "simulated_dataset3" with gene expression information
+# Set the number of bootstraps
+num_bootstraps <- 1000
+mod_results <- list()
+
+# Create empty vectors to store the bootstrapped survival times and censoring status
+bootstrapped_times <- vector("list", length = num_bootstraps)
+bootstrapped_status <- vector("list", length = num_bootstraps)
+
+# Perform bootstrapping
+set.seed(1685733101)  # Set a seed for reproducibility
+for (i in 1:num_bootstraps) {
+  # Generate a bootstrap sample by sampling with replacement from the dataset
+  bootstrap_sample <- simulated_dataset3 %>%
+    sample_n(size = nrow(simulated_dataset3), replace = TRUE)
+  
+  # Extract the survival times and censoring status from the bootstrap sample
+  bootstrapped_times[[i]] <- bootstrap_sample$time
+  bootstrapped_status[[i]] <- bootstrap_sample$status
+}
+
+# Perform the analysis on each bootstrap sample
+for (i in 1:num_bootstraps) {
+  # Fit the Cox proportional hazards model on the bootstrap sample
+  model <- coxph(Surv(bootstrapped_times[[i]], bootstrapped_status[[i]]) ~ tfrc + fam83f + samd12 + dlk1 + grin2b + gng13, data = simulated_dataset3)
+  
+  # Calculate the concordance index using the full dataset
+  mod_sum <- summary(model)
+  mod_results[[i]] <- mod_sum$concordance[1]
+}
+
+mean(unlist(mod_results))
 ```
 
 
