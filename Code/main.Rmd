@@ -2266,6 +2266,11 @@ new_gene_dataset <- new_gene_dataset %>%
 surv_model <- coxph(Surv(time, vital.status) ~ tfrc + fam83f + samd12 + grin2b + dlk1 + gng13, data = scl_common)
 
 
+# Setting the seed based on system time for reproducibility
+# Set a seed based on the system time
+# seed <- as.integer(Sys.time()) # Seed is: 1688405764
+set.seed(1688405764)
+
 # Extract the estimated survival probabilities and time points
 surv_prob <- survfit(surv_model)$surv
 time_points <- survfit(surv_model)$time
@@ -2286,9 +2291,9 @@ colnames(simulated_dataset) <- tolower(colnames(simulated_dataset))
 
 
 # Now testing the signature
-cox_mod_test <- coxph(data = simulated_dataset, Surv(time, status) ~ tfrc + fam83f + samd12 + grin2b + dlk1 + gng13) # C-index of 0.69
+cox_mod_test <- coxph(data = simulated_dataset, Surv(time, status) ~ tfrc + fam83f + samd12 + grin2b + dlk1 + gng13) # C-index of 0.69. With seed from above (1688405764) set it is 0.803 [se = 0.074]
 
-# 10 fold CV
+# 5 fold CV because of small size
 cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "grin2b", "dlk1", "gng13"))
 rownames(cox_preds) <- cox_preds$preds
 simulated_dataset_glmnet <- simulated_dataset
@@ -2313,9 +2318,9 @@ colnames(simulated_dataset_glmnet)[20194] <- "vital.status"
 
 
 
-
+# C-index for 5-fold CV is 0.863 with se = 0.06083
 current_cox <- cox_model_fitter( 
-  my_seed = 1234,
+  my_seed = 1688405764,
   my_alpha = 0,
   progress_free = FALSE,
   sim_testing = TRUE,
@@ -2356,7 +2361,7 @@ time_points <- survfit(surv_model)$time
 
 
 # Simulate survival times for the new gene expression dataset
-n <- nrow(next_test_df)  # Number of individuals in the new dataset
+n <- nrow(second_test_df)  # Number of individuals in the new dataset
 simulated_times <- sample(time_points, size = n, replace = TRUE, prob = surv_prob)
 
 # Optionally, simulate censoring based on a desired censoring rate
@@ -2369,16 +2374,16 @@ simulated_dataset2 <- data.frame(second_test_df, time = simulated_times, status 
 colnames(simulated_dataset2) <- tolower(colnames(simulated_dataset2))
 
 # Now testing the signature. grin2b isn't in this dataset so I can only test the other genes
-cox_mod_test2 <- coxph(data = simulated_dataset2, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13) # 0.629 for 7% survival rate, 0.744 for original dataset censoring rate (36%)
+cox_mod_test2 <- coxph(data = simulated_dataset2, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + gng13) # 0.629 for 7% survival rate, 0.756 for original dataset censoring rate (36%) [random seed: 1688405764]
 
 simulated_dataset2_glmnet <- simulated_dataset2
 colnames(simulated_dataset2_glmnet)[22282] <- "vital.status"
 
-# 5 fold cv (0.7368 with seed 123, 0.6211 with seed 1685733101)
+# 5 fold cv (0.7368 with seed 123, 0.6211 with seed 1685733101, 0.7733 with seed used by rest of simulated datasets:1688405764 )
 cox_preds <- data.frame(preds = c("tfrc", "fam83f", "samd12", "dlk1", "gng13"))
 rownames(cox_preds) <- cox_preds$preds
 current_cox <- cox_model_fitter(
-  my_seed = 1685733101,
+  my_seed = 1688405764,
   my_alpha = 0,
   sim_testing = TRUE,
   progress_free = FALSE,
@@ -2393,51 +2398,9 @@ current_cox <- cox_model_fitter(
   cat_preds = FALSE,
   n_folds = 5
 )
-
-
-# Now testing many random seeds to try and minimize bias of seed selection and get a fair view of
-# performance
-
-seeds <- numeric()
-
-for (n in 1:1000){
-  current_seed <- as.integer(runif(1, min = 1e6, max = 1e9))
-  seeds[[n]] <- current_seed
-}
-
-cox_outputs <- list()
-counter <- 1
-for (s in seeds){
-  current_cox <- cox_model_fitter(
-  my_seed = s,
-  my_alpha = 0,
-  sim_testing = TRUE,
-  progress_free = FALSE,
-  cox_predictors = cox_preds,
-  cox_df = simulated_dataset2_glmnet,
-  gene_num = 5,
-  save_coefs = FALSE,
-  tumor_stage = FALSE,
-  tumor_n = FALSE,
-  tumor_m = FALSE,
-  calc_auc = FALSE,
-  cat_preds = FALSE,
-  n_folds = 5
-)
-  cox_outputs[[counter]] <- current_cox
-  counter <- counter + 1
-}
-
-c_indicies <- numeric()
-for (n in 1:length(cox_outputs)){
-  current_cox <- cox_outputs[[n]]
-  c_index <- current_cox$CV$cvm[current_cox$CV$index[1]]
-  c_indicies[[n]] <- c_index
-}
-
 
 # 3rd dataset processing
-third_df <- read.csv("Data/GSE60052_79tumor.7normal.normalized.log2.data.Rda_finished.csv")
+third_df <- read.csv("Data/GSE60052_79tumor.7normal.normalized.log2.data.Rda_finished.csv", sep = ",")
 rownames(third_df) <- third_df$X
 third_df <- third_df %>%
   select(-X)
@@ -2459,41 +2422,30 @@ simulated_dataset3 <- simulated_dataset3 %>%
   select(!contains("hsa.mir."))
 
 # Now testing the signature.
-cox_mod_test3 <- coxph(data = simulated_dataset3, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + grin2b + gng13) # 0.615 C-index on initial dataset censoring rate 
+cox_mod_test3 <- coxph(data = simulated_dataset3, Surv(time, status) ~ tfrc + fam83f + samd12 + dlk1 + grin2b + gng13) # 0.615 C-index on initial dataset censoring rate. 0.659 with random seed with the seed used for other datasets. 
 
-# Trying bootstrappping
-# Assuming you have a dataset called "simulated_dataset3" with gene expression information
-# Set the number of bootstraps
-num_bootstraps <- 1000
-mod_results <- list()
 
-# Create empty vectors to store the bootstrapped survival times and censoring status
-bootstrapped_times <- vector("list", length = num_bootstraps)
-bootstrapped_status <- vector("list", length = num_bootstraps)
+colnames(simulated_dataset3)[51081] <- "vital.status"
 
-# Perform bootstrapping
-set.seed(1685733101)  # Set a seed for reproducibility
-for (i in 1:num_bootstraps) {
-  # Generate a bootstrap sample by sampling with replacement from the dataset
-  bootstrap_sample <- simulated_dataset3 %>%
-    sample_n(size = nrow(simulated_dataset3), replace = TRUE)
-  
-  # Extract the survival times and censoring status from the bootstrap sample
-  bootstrapped_times[[i]] <- bootstrap_sample$time
-  bootstrapped_status[[i]] <- bootstrap_sample$status
-}
+current_cox <- cox_model_fitter( 
+  my_seed = 1688405764,
+  my_alpha = 0,
+  progress_free = FALSE,
+  sim_testing = TRUE,
+  cox_predictors = cox_preds,
+  cox_df = simulated_dataset3,
+  gene_num = 6,
+  save_coefs = FALSE,
+  tumor_stage = FALSE,
+  tumor_n = FALSE,
+  tumor_m = FALSE,
+  calc_auc = FALSE,
+  cat_preds = FALSE,
+  n_folds = 5
+)
 
-# Perform the analysis on each bootstrap sample
-for (i in 1:num_bootstraps) {
-  # Fit the Cox proportional hazards model on the bootstrap sample
-  model <- coxph(Surv(bootstrapped_times[[i]], bootstrapped_status[[i]]) ~ tfrc + fam83f + samd12 + dlk1 + grin2b + gng13, data = simulated_dataset3)
-  
-  # Calculate the concordance index using the full dataset
-  mod_sum <- summary(model)
-  mod_results[[i]] <- mod_sum$concordance[1]
-}
 
-mean(unlist(mod_results))
+
 ```
 
 
@@ -2706,4 +2658,302 @@ mean_performance <- mean(cv_performance) # 0.7204482 with the 6 active perdictor
 median_performance <- median(cv_performance)
 ```
 
+# Bifurcating each gene in the gene signature of miRMS into high and low risk based on mean expression to see how expression impacts survival
+```{r scl common high and low risk gene expression}
+# TFRC
+tfrc_only <- scl_common %>%
+  select(patient.id, vital.status, time, sex, smoker, n.stage, m.stage, tfrc) %>%
+  mutate(mean_expr = mean(tfrc)) %>%
+  mutate(med_expr = median(tfrc)) %>%
+  mutate(mean_expr_cat = ifelse(tfrc > mean_expr, "high", "low")) %>%
+  mutate(med_expr_cat = ifelse(tfrc > med_expr, "high", "low")) %>%
+  mutate(different_risk_cat = ifelse(mean_expr_cat != med_expr_cat, TRUE, FALSE))
+
+fit <- survfit(Surv(tfrc_only$time, tfrc_only$vital.status) ~ med_expr_cat, data = tfrc_only)
+
+
+p0 <- ggsurvplot(
+  fit = fit,
+  data = tfrc_only,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Expression",
+  title = "TFRC",
+  legend.labs = c("High expression", "Low expression"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
+
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_a.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_a.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+
+
+
+# GRIN2B
+grin2b_only <- scl_common %>%
+  select(patient.id, vital.status, time, sex, smoker, n.stage, m.stage, grin2b) %>%
+  mutate(mean_expr = mean(grin2b)) %>%
+  mutate(med_expr = median(grin2b)) %>%
+  mutate(mean_expr_cat = ifelse(grin2b > mean_expr, "high", "low")) %>%
+  mutate(med_expr_cat = ifelse(grin2b > med_expr, "high", "low")) %>%
+  mutate(different_risk_cat = ifelse(mean_expr_cat != med_expr_cat, TRUE, FALSE))
+
+fit <- survfit(Surv(grin2b_only$time, grin2b_only$vital.status) ~ med_expr_cat, data = grin2b_only)
+
+
+p1 <- ggsurvplot(
+  fit = fit,
+  data = grin2b_only,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Expression",
+  title = "GRIN2B",
+  legend.labs = c("High expression", "Low expression"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_b.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_b.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+
+
+# GNG13
+gng13_only <- scl_common %>%
+  select(patient.id, vital.status, time, sex, smoker, n.stage, m.stage, gng13) %>%
+  mutate(mean_expr = mean(gng13)) %>%
+  mutate(med_expr = median(gng13)) %>%
+  mutate(mean_expr_cat = ifelse(gng13 > mean_expr, "high", "low")) %>%
+  mutate(med_expr_cat = ifelse(gng13 > med_expr, "high", "low")) %>%
+  mutate(different_risk_cat = ifelse(mean_expr_cat != med_expr_cat, TRUE, FALSE))
+
+fit <- survfit(Surv(gng13_only$time, gng13_only$vital.status) ~ med_expr_cat, data = gng13_only)
+
+
+p2 <- ggsurvplot(
+  fit = fit,
+  data = gng13_only,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Expression",
+  title = "GNG13",
+  legend.labs = c("High expression", "Low expression"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_c.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_c.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+
+
+
+# SAMD12
+samd12_only <- scl_common %>%
+  select(patient.id, vital.status, time, sex, smoker, n.stage, m.stage, samd12) %>%
+  mutate(mean_expr = mean(samd12)) %>%
+  mutate(med_expr = median(samd12)) %>%
+  mutate(mean_expr_cat = ifelse(samd12 > mean_expr, "high", "low")) %>%
+  mutate(med_expr_cat = ifelse(samd12 > med_expr, "high", "low")) %>%
+  mutate(different_risk_cat = ifelse(mean_expr_cat != med_expr_cat, TRUE, FALSE))
+
+fit <- survfit(Surv(samd12_only$time, samd12_only$vital.status) ~ med_expr_cat, data = samd12_only)
+
+
+p3 <- ggsurvplot(
+  fit = fit,
+  data = samd12_only,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Expression",
+  title = "SAMD12",
+  legend.labs = c("High expression", "Low expression"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_d.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_d.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+
+
+
+# FAM83f
+fam83f_only <- scl_common %>%
+  select(patient.id, vital.status, time, sex, smoker, n.stage, m.stage, fam83f) %>%
+  mutate(mean_expr = mean(fam83f)) %>%
+  mutate(med_expr = median(fam83f)) %>%
+  mutate(mean_expr_cat = ifelse(fam83f > mean_expr, "high", "low")) %>%
+  mutate(med_expr_cat = ifelse(fam83f > med_expr, "high", "low")) %>%
+  mutate(different_risk_cat = ifelse(mean_expr_cat != med_expr_cat, TRUE, FALSE))
+
+fit <- survfit(Surv(fam83f_only$time, fam83f_only$vital.status) ~ med_expr_cat, data = fam83f_only)
+
+
+p4 <- ggsurvplot(
+  fit = fit,
+  data = fam83f_only,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Expression",
+  title = "FAM83f",
+  legend.labs = c("High expression", "Low expression"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_e.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_e.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+
+
+
+# DLK1
+dlk1_only <- scl_common %>%
+  select(patient.id, vital.status, time, sex, smoker, n.stage, m.stage, dlk1) %>%
+  mutate(mean_expr = mean(dlk1)) %>%
+  mutate(med_expr = median(dlk1)) %>%
+  mutate(mean_expr_cat = ifelse(dlk1 > mean_expr, "high", "low")) %>%
+  mutate(med_expr_cat = ifelse(dlk1 > med_expr, "high", "low")) %>%
+  mutate(different_risk_cat = ifelse(mean_expr_cat != med_expr_cat, TRUE, FALSE))
+
+fit <- survfit(Surv(dlk1_only$time, dlk1_only$vital.status) ~ med_expr_cat, data = dlk1_only)
+
+
+p5 <- ggsurvplot(
+  fit = fit,
+  data = dlk1_only,
+  conf.int = TRUE,
+  pval = TRUE,
+  pval.size = 5,
+  pval.coord = c(2500, 0.8),
+  palette = c("red", "blue"),
+  risk.table = FALSE,
+  censor.shape = "|",
+  size = 1.5,
+  censor.size = 4.5,
+  xlab = "Time (days)",
+  legend.title = "Expression",
+  title = "DLK1",
+  legend.labs = c("High expression", "Low expression"),
+  ggtheme = theme(
+    axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+    axis.title = element_text(size = 18, face = "bold"),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 1.25),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14),
+    panel.background = element_blank()
+  )
+)
+
+# Saving as PNG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_f.png", device = "png", width = 8, height = 8, dpi = 600, units = "in")
+
+# Saving as SVG
+ggsave(p1$plot, path = "Figures/panels/", filename = "supplement_1_f.svg", device = "svg", width = 8, height = 8, dpi = 600, units = "in")
+
+# Combo plot
+combo_plot <- ggarrange(p0$plot, p4$plot,p1$plot,p5$plot,p2$plot,p3$plot, ncol = 3, nrow = 2, labels = "AUTO", font.label = list(size = 18), align = "hv", common.legend = TRUE)
+
+# Saving as PNG
+ggsave(combo_plot, path = "Figures/panels/", filename = "supplement_1_combo.png", device = "png", width = 12, height = 12, dpi = 600, units = "in", bg = "white")
+
+# Saving as SVG
+ggsave(combo_plot, path = "Figures/panels/", filename = "supplement_1_combo.svg", device = "svg", width = 12, height = 12, dpi = 600, units = "in", bg = "white")
+
+```
 
