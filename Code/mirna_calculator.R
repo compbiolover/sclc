@@ -10,10 +10,12 @@ mirna_calculator <- function(ts_org = "Human",
                              save_mirna_genes = TRUE,
                              save_mirna_genes_mat = TRUE,
                              include_sites_score = FALSE,
+                             save_site_score = FALSE,
                              mirna_ranking_name_rds = "Outputs/lung_mirnas.rds",
                              mirna_genes_mat_name_rds = "Outputs/lung_mirna_score_matrix.rds",
                              mirna_genes_mat_name = "Outputs/lung_mirna_score_matrix.csv",
-                             mirna_ranking_name = "Outputs/lung_mirnas.csv") {
+                             mirna_ranking_name = "Outputs/lung_mirnas.csv",
+                             mirna_site_score_name = "Outputs/site_scores.csv") {
   library(furrr)
   library(future)
   library(hoardeR)
@@ -52,7 +54,7 @@ mirna_calculator <- function(ts_org = "Human",
     common_mirnas <- common_mirnas[1:max_mirnas]
   } else if (print_ts_targets) {
     cat("There are fewer target miRNAs available than your input. Using the largest number of common miRNAs for this submission to TargetScan\n")
-    cat("The number of common mirnas is:", length(common_mirnas), "\n")
+    cat("The number of common miRNAs is:", length(common_mirnas), "\n")
   }
 
   # TargetScan function with try-catch to help manage no table returned errors
@@ -66,7 +68,7 @@ mirna_calculator <- function(ts_org = "Human",
           release = ts_version,
           maxOut = max_mir_targets
         ) %>%
-          mutate(miRNA_name_final = m)
+          mutate(mirna_name_final = m)
       },
       error = function(e) {
         message(paste0("Error: ", e$message, ". Moving to next miRNA"))
@@ -76,20 +78,69 @@ mirna_calculator <- function(ts_org = "Human",
   })
 
   # Simplify TargetScan results
-  total_list <- lapply(mirna_targets, function(df) {
-    if ("Ortholog" %in% names(df)) {
-      df %>%
-        select(Ortholog, miRNA_name_final) %>%
-        rename(gene_list = Ortholog, mirna_list = miRNA_name_final)
-    } else {
-      writeLines("This miRNA is not found in TargetScan. We are continuing on to the next miRNA")
-      NULL
-    }
-  })
+  if (include_sites_score) {
+    total_list <- lapply(mirna_targets, function(df) {
+      if ("Ortholog" %in% names(df)) {
+        df <- df %>%
+          select(Ortholog, mirna_name_final, consSites, poorlySites) %>%
+          rename(gene_list = Ortholog, mirna_list = mirna_name_final) %>%
+          mutate(across(c(consSites, poorlySites), ~ as.numeric(gsub("\\*", "", .))), .keep = "unused") %>%
+          mutate(across(c(consSites, poorlySites), ~ replace(., is.na(.), 0))) %>%
+          mutate(site_score = (consSites / (consSites + poorlySites)) + consSites) %>%
+          arrange(desc(site_score))
+        df
+      } else {
+        writeLines("This miRNA is not found in TargetScan. We are continuing on to the next miRNA")
+        NULL
+      }
+    })
+  } else {
+    total_list <- lapply(mirna_targets, function(df) {
+      if ("Ortholog" %in% names(df)) {
+        df %>%
+          select(Ortholog, mirna_name_final) %>%
+          rename(gene_list = Ortholog, mirna_list = mirna_name_final)
+      } else {
+        writeLines("This miRNA is not found in TargetScan. We are continuing on to the next miRNA")
+        NULL
+      }
+    })
+  }
+
 
 
   # Removing any lists in total_list that are NULL (i.e. aren't found in TargetScan)
   total_list <- total_list[!sapply(total_list, is.null)]
+
+  # Function to sum the site scores across unique miRNA-gene pairs
+  sum_site_scores <- function(lists) {
+    # Create an empty data frame to store the summed site scores
+    result <- data.frame(miRNA = character(), gene = character(), site_score = numeric(), stringsAsFactors = FALSE)
+
+    # Loop through each list in the input
+    for (lst in lists) {
+      # Extract the miRNA, gene, and site score from the list
+      miRNA <- lst$mirna_list
+      gene <- lst$gene_list
+      site_score <- lst$site_score
+
+      # Check if the miRNA-gene pair already exists in the result data frame
+      if (any(result$miRNA == miRNA & result$gene == gene)) {
+        # If the pair exists, update the site score by summing with the existing value
+        result$site_score[result$miRNA == miRNA & result$gene == gene] <- result$site_score[result$miRNA == miRNA & result$gene == gene] + site_score
+      } else {
+        # If the pair doesn't exist, add a new row to the result data frame
+        result <- rbind(result, data.frame(miRNA = miRNA, gene = gene, site_score = site_score, stringsAsFactors = FALSE))
+      }
+    }
+
+    # Return the resulting data frame
+    result <- result[order(result$site_score, decreasing = TRUE), ]
+    result
+  }
+
+  # Call the function with the input lists
+  summed_site_scores <- sum_site_scores(total_list)
 
   # Create score matrix
   all_mirs_for_score <- unique(unlist(sapply(total_list, "[[", "mirna_list")))
@@ -138,6 +189,10 @@ mirna_calculator <- function(ts_org = "Human",
   if (save_mirna_genes) {
     write.csv(mirna_ranking, file = mirna_ranking_name)
     saveRDS(mirna_ranking, file = mirna_ranking_name_rds)
+  }
+
+  if (save_site_score) {
+    write.csv(summed_site_scores, file = mirna_site_score_name)
   }
 
   return(mirna_ranking)

@@ -5,6 +5,8 @@
 cox_model_fitter <- function(my_seed = 1,
                              my_alpha = 1,
                              cox_df = NULL,
+                             my_folds = c(1, 2, 2, 3, 4, 1, 3, 4, 5, 2, 4, 5, 3, 2, 1, 1, 5, 3),
+                             progress_free = FALSE,
                              sim_testing = FALSE,
                              gene_num = 1800,
                              max_it = 100000,
@@ -39,13 +41,13 @@ cox_model_fitter <- function(my_seed = 1,
     stop("You must include predictors for your cox model.")
   }
 
-  if (class(my_seed) != "numeric") {
-    stop("You must specify a number for your seed.")
-  }
+  # if (class(my_seed) != "numeric" | class(my_seed) != "integer") {
+  #   stop("You must specify a number for your seed.")
+  # }
 
-  if (class(cox_df) != "data.frame") {
-    stop("Your cox.df parameter must be of type 'data.frame'.")
-  }
+  # if (class(cox_df) != "data.frame") {
+  #   stop("Your cox.df parameter must be of type 'data.frame'.")
+  # }
 
   # If the packages are installed, they
   # will be loaded. If they are not,
@@ -92,6 +94,13 @@ cox_model_fitter <- function(my_seed = 1,
     my_predictors <- my_predictors[1:gene_num]
   }
 
+  if (is.character(cox_predictors)) {
+    my_predictors <- cox_predictors
+    my_predictors <- head(my_predictors, n = gene_num)
+    my_predictors <- intersect(my_predictors, colnames(cox_df))
+    my_predictors <- my_predictors[my_predictors != "krtap19"]
+  }
+
 
   if (length(my_predictors) == 0) {
     print("No common predictors")
@@ -125,26 +134,34 @@ cox_model_fitter <- function(my_seed = 1,
   my_x <- model.matrix(my_predictors, cox_df)
 
 
-  # The response object for the cox model
-  my_y <- Surv(
-    time = cox_df$time,
-    event = cox_df$vital.status
-  )
+  if (progress_free) {
+    # The response object for the cox model
+    my_y <- Surv(
+      time = cox_df$time2,
+      event = cox_df$vital.status
+    )
+  } else {
+    # The response object for the cox model
+    my_y <- Surv(
+      time = cox_df$time,
+      event = cox_df$vital.status
+    )
+  }
 
   if (sim_testing) {
-    # The 10-fold cross-validation fit with alpha set to 0 to be vanilla Cox model
+    # The k-fold cross-validation fit with alpha set to 0 to be vanilla Cox model
     # with no regularization
     cv_fit <- cv.glmnet(
       x = my_x, y = my_y, nfolds = n_folds, type.measure = "C",
       maxit = max_it, family = "cox", parallel = TRUE,
-      alpha = 0, keep = TRUE
+      alpha = 0, keep = TRUE, foldid = my_folds
     )
   } else {
-    # The 10-fold cross-validation fit
+    # The k-fold cross-validation fit
     cv_fit <- cv.glmnet(
       x = my_x, y = my_y, nfolds = n_folds, type.measure = "C",
       maxit = max_it, family = "cox", parallel = TRUE,
-      alpha = my_alpha, keep = TRUE
+      alpha = my_alpha, keep = TRUE, foldid = my_folds
     )
   }
 

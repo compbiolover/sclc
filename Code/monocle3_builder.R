@@ -59,7 +59,7 @@ cell_dataset_builder <- function(
     gene_meta = gene_metadata,
     cell_meta = cell_metadata,
     norm_flag = "none",
-    umap_seed = 123,
+    umap_seed = 1688576604,
     cluster_res = 1e-5,
     n_dims = 100,
     reduction_method = "UMAP",

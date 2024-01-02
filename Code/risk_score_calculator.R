@@ -15,7 +15,6 @@ risk_score_calculator <- function(my.file = active_coefs.csv,
   # Required packages----
   require(riskRegression)
   require(survival)
-  require(survivalsim)
 
   # Required functions----
 
@@ -64,7 +63,7 @@ risk_score_calculator <- function(my.file = active_coefs.csv,
     print(length(gene_sign))
 
     # Doing matrix multiplication of risk_df matrix by the diagonal of the
-    # gene_sign vector to propogate the sign of the coefficient for each gene
+    # gene_sign vector to propagate the sign of the coefficient for each gene
     # through our risk matrix for later calculation steps
     risk_df <- risk_df %*% diag(gene_sign)
     risk_df <- as.data.frame(risk_df)
@@ -167,9 +166,12 @@ risk_score_calculator <- function(my.file = active_coefs.csv,
 
     # Plotting the outcome of the fit
     finished_plot <- km_plotter(
-      km.fit = km_fit, data.source = converted_df,
-      p.value = TRUE, pval.size = 8,
-      confidence.int = set.ci, risk.table = TRUE,
+      km.fit = km_fit,
+      data.source = converted_df,
+      p.value = TRUE,
+      pval.size = 8,
+      confidence.int = set.ci,
+      risk.table = TRUE,
       show.pval.method = set.test,
       surv.curv.size = 4.5,
       my.km.plot = my.km.plot,
