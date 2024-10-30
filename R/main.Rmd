@@ -55,7 +55,7 @@ knitr::opts_knit$set(root.dir = "~/Documents/Work/Phd_program/hong_lab/Projects/
 # zinbwave: for DESeq2 pre-processing
 
 pacman::p_load(
-  caret, cowplot, coxed, data.table, DESeq2, DEsingle, devtools, doParallel, dunn.test, easystats, edgeR, foreach, forestplot, ggforce, GGally, ggplot2, glmnet, hoardeR, igraph, Matrix, monocle3, parallel, phateR, progress, pwr, reticulate, retry, randomForestSRC, Rmagic, scDD, SingleCellExperiment, styler, survival, survminer, survsim, survivalmodels, svglite, switchde, tidyverse, viridis, zinbwave
+caret, cowplot, coxed, data.table, DESeq2, DEsingle, devtools, doParallel, dunn.test, easystats, edgeR, foreach, forestplot, ggforce, GGally, ggplot2, glmnet, gridExtra, hoardeR, igraph, janitor, Matrix, moments, monocle3, parallel, phateR, progress, pwr, reticulate, retry, randomForestSRC, Rmagic, scDD, SingleCellExperiment, styler, survival, survminer, survsim, survivalmodels, svglite, switchde, tidyverse, viridis, zinbwave
 )
 ```
 
@@ -83,108 +83,267 @@ invisible(lapply(list.files("Code", pattern = "\\.R$", full.names = TRUE), sourc
 # Link to paper: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4861069/
 # Link to data: https://www.cbioportal.org/study/summary?id=sclc_ucologne_2015
 # Paper title for data: Comprehensive genomic profiles of small cell lung cancer by George et al.
+# Example usage
+# survival_data <- process_survival_data(raw_data, "progression_free")
 
+#' Load and process SCLC expression and clinical data
+#' @param expr_file Path to expression data file
+#' @param clinical_file Path to clinical data file  
+#' @param survival_type "overall" or "progression_free"
+#' @return Merged expression and clinical data frame
+#' @source George et al. PMC4861069
+load_sclc_data <- function(expr_file, clinical_file, survival_type = "overall") {
+ expr_data <- load_expression_data(expr_file)
+ clinical_data <- load_clinical_data(clinical_file, survival_type)
+ 
+ common_patients <- intersect(clinical_data$patient_id, colnames(expr_data))
+ expr_processed <- process_expression_data(expr_data, common_patients)
+ merge_expression_clinical(expr_processed, clinical_data)
+}
 
-# Load gene expression data from a file and select relevant columns
-scl_df <- read.csv(
-  file = "Data/sclc_ucologne_2015/data_mrna_seq_rpkm.txt",
-  sep = "\t"
-)
-scl_df <- subset(scl_df,
-  select = c(Hugo_Symbol, sclc_ucologne_2015_S00022:sclc_ucologne_2015_S02397)
-)
+#' Load SCLC gene expression data
+#' @param file_path Path to expression data file
+#' @return Expression data frame
+load_expression_data <- function(file_path) {
+ data <- read_tsv(file_path)
+ data <- data |> select(Hugo_Symbol, starts_with("sclc_ucologne_2015_S"))
+ colnames(data) <- sub("^sclc_ucologne_2015_S", "", colnames(data))
+ colnames(data) <- str_to_lower(colnames(data)) 
+ data
+}
 
-# Clean up column names by removing prefix
-colnames(scl_df) <- sub("^sclc_ucologne_2015_S", "", colnames(scl_df))
+# Function to convert our FPKM data to TPM data
+fpkm_to_tpm <- function(fpkm_df) {
+    # Input validation
+    if (!is.data.frame(fpkm_df) && !is.matrix(fpkm_df)) {
+        stop("Input must be a data frame or matrix")
+    }
+    
+    if (ncol(fpkm_df) < 2) {
+        stop("Input must have at least 2 columns (gene names and one sample)")
+    }
+    
+    # Store gene names
+    genes <- fpkm_df[,1]
+    
+    # Convert remaining columns to numeric matrix
+    fpkm_matrix <- tryCatch({
+        matrix <- as.matrix(fpkm_df[,-1])
+        mode(matrix) <- "numeric"
+        if (any(is.na(matrix))) {
+            stop("Non-numeric values found in expression data")
+        }
+        matrix
+    }, error = function(e) {
+        stop("Failed to convert expression data to numeric matrix: ", e$message)
+    })
+    
+    # Check for negative values
+    if (any(fpkm_matrix < 0)) {
+        warning("Negative values found in expression data")
+    }
+    
+    # Calculate TPM
+    tpm_matrix <- apply(fpkm_matrix, 2, function(x) {
+        sum_x <- sum(x, na.rm = TRUE)
+        if (sum_x == 0) {
+            warning("Found column with sum = 0")
+            return(rep(0, length(x)))
+        }
+        x / sum_x * 1e6
+    })
+    
+    # Create output data frame
+    tpm_df <- data.frame(Gene = genes, tpm_matrix)
+    
+    # Verify column sums are approximately 1 million
+    col_sums <- colSums(tpm_matrix)
+    if (any(abs(col_sums - 1e6) > 1)) {
+        warning("Not all columns sum to approximately 1 million")
+    }
+    
+    return(tpm_df)
+}
 
-# Load clinical data for patients and clean up column names and values
-scl_patient <- read.csv(
-  file = "Data/sclc_ucologne_2015/data_clinical_patient.txt",
-  sep = "\t"
-)
+# Example usage with error handling for FPKM to TPM:
+tryCatch({
+    tpm_data <- fpkm_to_tpm(test_df)
+    print("Conversion successful")
+    print("Column sums (should be close to 1,000,000):")
+    print(colSums(tpm_data[,-1]))
+    
+}, error = function(e) {
+    print(paste("Error in conversion:", e$message))
+})
 
-scl_patient <- scl_patient %>%
-  slice(5:121) %>%
-  rename(
-    Patient.ID = X.Patient.Identifier, Overall.Survival.Status = Overall.Survival.Status,
-    Overall.Survival.Months. = Overall.Survival..Months., Smoker = Smoker, Progress.Free.Survival.Months. = Progress.Free.Survival..Months., Acquisition.Method = First.Pathologic.Diagnosis.Biospecimen.Acquisition.Method.Type, Age = Diagnosis.Age, Radiation = Radiation.Therapy
-  ) %>%
-  select(Patient.ID, Sex, Overall.Survival.Status, Overall.Survival.Months., Progress.Free.Survival.Months., Smoker, Chemotherapy, Neoadjuvant.Chemotherapy, N.Stage, M.Stage, UICC.Tumor.Stage, Acquisition.Method, Age, Radiation) %>%
-  filter(Smoker != "Never") %>%
-  filter(Smoker != "") %>%
-  mutate(
-    Smoker = as.factor(Smoker),
-    Smoker = if_else(Smoker == "Current", true = 1, false = 0)
-  ) %>%
-  mutate(Overall.Survival.Status = ifelse(Overall.Survival.Status == "1:DECEASED", 1, 0)) %>%
-  rename(
-    vital.status = Overall.Survival.Status,
-    time = Overall.Survival.Months.
-  ) %>%
-  mutate(Patient.ID = gsub(
-    x = Patient.ID,
-    pattern = "sclc_ucologne_2015_S",
-    replacement = ""
-  )) %>%
-  mutate(vital.status_new = as.numeric(vital.status)) %>%
-  mutate(time_new = as.numeric(time)) %>%
-  select(-vital.status, -time) %>%
-  rename(
-    vital.status = vital.status_new,
-    time = time_new
-  ) %>%
-  mutate(time = time * 30) %>%
-  filter(time != 0) %>%
-  mutate(Progress.Free.Survival.Months. = ifelse(Progress.Free.Survival.Months. == "", NA, Progress.Free.Survival.Months.)) %>%
-  rename_all(tolower)
-# Uncomment this line for the progress free analysis
-# filter(!is.na(progress.free.survival.months.)) %>%
-# rename(time2 = progress.free.survival.months.) %>%
-# mutate(time2 = as.numeric(time2)) %>%
-# mutate(time2 = time2 * 30)
-
-
-# Extract the list of gene symbols
-scl_genes <- scl_df$Hugo_Symbol
-
-# Find the list of patients that have data for both gene expression and clinical data
-common_patients <- intersect(scl_patient$patient.id, colnames(scl_df))
-
-
-# Select only the common columns from gene expression data and transpose it
-# so that each row corresponds to a patient
-scl_common <- scl_df %>%
-  select(all_of(common_patients)) %>%
-  t() %>%
-  as.data.frame()
-
-# Assign the gene symbols as column names
-colnames(scl_common) <- scl_genes
-
-# Remove duplicated columns and add patient ID as a column
-scl_common <- scl_common %>%
-  select(-which(duplicated(names(.)))) %>%
-  rownames_to_column(var = "patient.id")
-
-# Join the gene expression data with the clinical data for each patient
-scl_common <- left_join(scl_common, scl_patient[, c(
-  "sex", "smoker",
-  "vital.status", "time",
-  "patient.id", "n.stage", "m.stage", "uicc.tumor.stage",
-  "chemotherapy", "neoadjuvant.chemotherapy", "acquisition.method",
-  "age", "radiation"
-)],
-by = "patient.id"
-) %>%
-  rename_all(tolower) %>%
-  select(
-    patient.id, age, sex, smoker, vital.status, time, n.stage, m.stage,
-    uicc.tumor.stage, chemotherapy, neoadjuvant.chemotherapy, radiation, 
-    acquisition.method,  everything()
+# Checks distributions to see if log2 transformation is needed
+check_distribution <- function(data, pseudocount = 1, sample_name = "sample", 
+                             save_path = "distribution_plots/") {
+  library(ggplot2)
+  library(gridExtra)
+  library(moments)
+  
+  # Create directory if it doesn't exist
+  dir.create(save_path, showWarnings = FALSE)
+  
+  # Create statistics
+  orig_stats <- c(
+    mean = mean(data),
+    median = median(data),
+    skewness = moments::skewness(data),
+    shapiro_p = shapiro.test(sample(data, min(5000, length(data))))$p.value
   )
+  
+  log_data <- log2(data + pseudocount)
+  log_stats <- c(
+    mean = mean(log_data),
+    median = median(log_data),
+    skewness = moments::skewness(log_data),
+    shapiro_p = shapiro.test(sample(log_data, min(5000, length(log_data))))$p.value
+  )
+  
+  # Create plots
+  p1 <- ggplot(data.frame(x = data), aes(x = x)) +
+    geom_histogram(bins = 50) +
+    ggtitle(paste0("Original Distribution - ", sample_name)) +
+    theme_minimal()
+  
+  p2 <- ggplot(data.frame(x = log_data), aes(x = x)) +
+    geom_histogram(bins = 50) +
+    ggtitle(paste0("Log2 Transformed - ", sample_name)) +
+    theme_minimal()
+  
+  # Combine plots
+  combined_plot <- arrangeGrob(p1, p2, ncol = 2)
+  
+  # Save plot
+  ggsave(
+    filename = paste0(save_path, sample_name, "_distribution.png"),
+    plot = combined_plot,
+    width = 12,
+    height = 6
+  )
+  
+  # Print statistics
+  cat("\nStatistics for", sample_name, ":\n")
+  cat("\nOriginal Distribution Statistics:\n")
+  print(orig_stats)
+  cat("\nLog2 Transformed Statistics:\n")
+  print(log_stats)
+  
+  return(list(
+    original_stats = orig_stats,
+    log_stats = log_stats,
+    plot = combined_plot
+  ))
+}
 
-# Removing intermediate files to keep the environment clean
-rm(scl_df, scl_patient, scl_genes, common_patients)
+# For all samples
+for(sample in colnames(tpm_data)[-1]) {
+  check_distribution(tpm_data[[sample]], sample_name = sample, save_path = "Outputs/distribution_plots/")
+}
+
+
+#' Load SCLC clinical data
+#' @param file_path Path to clinical data file
+#' @param survival_type "overall" or "progression_free" 
+#' @return Processed clinical data frame
+load_clinical_data <- function(file_path, survival_type) {
+ data <- read.csv(file_path, sep = "\t") %>%
+   slice(5:121) %>% 
+   rename_clinical_columns() %>%
+   select_clinical_columns() %>%
+   process_clinical_variables(survival_type)
+ if(survival_type == "progression_free") {
+   process_progression_free(data)}
+ else {
+   data 
+ }
+}
+
+#' Process clinical variables
+#' @param data Clinical data frame
+#' @param survival_type "overall" or "progression_free"
+#' @return Processed data frame 
+process_clinical_variables <- function(data, survival_type) {
+ data %>%
+   filter(smoker != "Never", smoker != "") %>%
+   mutate(
+     smoker = as.factor(smoker),
+     smoker = if_else(smoker == "Current", 1, 0),
+     vital_status = if_else(vital_status == "1:DECEASED", 1, 0),
+     patient_id = gsub("sclc_ucologne_2015_S", "", patient_id),
+     time = survival_months * 30,
+     progression_free_months = if_else(progression_free_months == "", NA, 
+                                     progression_free_months)
+   ) %>%
+   filter(time != 0)
+}
+
+#' Process expression data
+#' @param expr_data Expression data frame
+#' @param common_patients Vector of common patient IDs
+#' @return Processed expression data frame
+process_expression_data <- function(expr_data, common_patients) {
+ expr_data %>%
+   select(all_of(common_patients)) %>%
+   t() %>%
+   as.data.frame() %>%
+   `colnames<-`(expr_data$Hugo_Symbol) %>%
+   select(-which(duplicated(names(.)))) %>%
+   rownames_to_column(var = "patient_id")
+}
+
+#' Merge expression and clinical data
+#' @param expr_data Processed expression data
+#' @param clinical_data Processed clinical data
+#' @return Merged data frame
+merge_expression_clinical <- function(expr_data, clinical_data) {
+ clinical_cols <- c("sex", "smoker", "vital_status", "time", "patient_id",
+                   "n_stage", "m_stage", "uicc_tumor_stage", "chemotherapy", 
+                   "neoadjuvant_chemotherapy", "acquisition_method", "age",
+                   "radiation")
+ 
+ left_join(expr_data, clinical_data[, clinical_cols], by = "patient_id") %>%
+   select(patient_id, age, sex, smoker, vital_status, time, n_stage, m_stage,
+          uicc_tumor_stage, chemotherapy, neoadjuvant_chemotherapy,
+          radiation, acquisition_method, everything())
+}
+
+#' Rename clinical columns to consistent format
+#' @param data Clinical data frame
+#' @return Data frame with renamed columns
+rename_clinical_columns <- function(data) {
+ rename(data,
+   patient_id = X_Patient_Identifier,
+   vital_status = Overall_Survival_Status, 
+   survival_months = Overall_Survival_Months,
+   progression_free_months = Progress_Free_Survival_Months,
+   acquisition_method = First_Pathologic_Diagnosis_Biospecimen_Acquisition_Method_Type,
+   age = Diagnosis_Age,
+   radiation = Radiation_Therapy
+ )
+}
+
+#' Select relevant clinical columns
+#' @param data Clinical data frame
+#' @return Data frame with selected columns
+select_clinical_columns <- function(data) {
+ select(data, patient_id, sex, vital_status, survival_months, 
+        progression_free_months, smoker, chemotherapy, neoadjuvant_chemotherapy,
+        n_stage, m_stage, uicc_tumor_stage, acquisition_method, age, radiation)
+}
+
+
+#' Select relevant clinical columns
+#' @param data Clinical data frame
+#' @return Data frame with selected columns
+select_clinical_columns <- function(data) {
+ select(data, patient_id, sex, vital_status, survival_months, 
+        progression_free_months, smoker, chemotherapy, neoadjuvant_chemotherapy,
+        n_stage, m_stage, uicc_tumor_stage, acquisition_method, age, radiation)
+}
+
 ```
 
 # Loading and pre-processing single-cell data
