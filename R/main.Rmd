@@ -5219,37 +5219,64 @@ print(cal_1yr)
 # External validation of the 4-gene miRMS signature (TFRC, FAM83F, DLK1, GNG13)
 # on independent SCLC cohorts with survival data.
 #
-# Candidate cohorts identified for validation:
+# ============================================================================
+# TIER 1: STRONG CANDIDATES (Expression + Survival Confirmed)
+# ============================================================================
 #
-# 1. cBioPortal: sclc_clcgp_2017 (CLCGP, Clinical Lung Cancer Genome Project)
-#    - 85 SCLC tumor samples, RNA-seq
-#    - Clinical data with survival
-#    - URL: https://www.cbioportal.org/study/summary?id=sclc_clcgp_2017
+# 1. GEO: GSE60052 [PRIMARY EXTERNAL VALIDATION]
+#    - 79 SCLC tumors + 7 normal controls, ~45-48 patients with OS annotation
+#    - Platform: RNA-seq (Illumina HiSeq 2000, GPL11154)
+#    - Chinese cohort (independent population from George et al.)
+#    - All 4 signature genes measurable (RNA-seq)
+#    - Most commonly used SCLC external validation dataset in literature
+#    - Ref: Chinese SCLC genomics study (WES + RNA-seq of 99 patients)
+#    - URL: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE60052
 #
-# 2. GEO: GSE60052 (Sato et al., 2013)
-#    - 79 SCLC patient samples, Affymetrix microarray (HG-U133 Plus 2.0)
-#    - Survival data available
-#    - TFRC, DLK1, GNG13 probes present; FAM83F may need alias lookup
+# 2. GEO: GSE30219 [SECONDARY - CROSS-PLATFORM VALIDATION]
+#    - 293 lung tumors total, including ~21 SCLC samples with OS
+#    - Platform: Affymetrix HG-U133 Plus 2.0 (GPL570)
+#    - Western cohort — provides cross-platform AND cross-population validation
+#    - TFRC, DLK1, GNG13 well-represented; FAM83F probe 239281_at needs verify
+#    - Ref: Rousseaux et al. (2013), J Clin Invest
+#    - URL: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE30219
 #
-# 3. GEO: GSE40275 (Mossé et al.)
-#    - SCLC cell lines + patient samples with survival
-#    - Affymetrix microarray
+# 3. TU-SCLC Cohort (Liu/Jiang et al., Cell 2024) [IF DATA ACCESSIBLE]
+#    - 112 Chinese SCLC specimens, multi-omics (RNA-seq, WES, proteomics)
+#    - Survival data: YES (OS analyzed, prognostic biomarkers identified)
+#    - All 4 genes measurable (bulk RNA-seq)
+#    - Ref: Liu et al., Cell 2024; 187:184-203.e28
+#    - Data likely in NGDC (GSA-Human) or iProX — check Data Availability
 #
-# 4. GEO: GSE43346 (Sato et al.)
-#    - 23 SCLC samples, expression profiling
-#    - Survival available
+# 4. Wang et al. 2025 Multi-omics SCLC (Signal Transduct Target Ther)
+#    - 314 SCLC patients total; bulk RNA-seq on 45 tumor-normal pairs
+#    - Multi-center Chinese cohort (10 hospitals)
+#    - Survival + clinical staging available
+#    - Ref: Wang et al., Signal Transduct Target Ther 2025;10:290
 #
-# 5. cBioPortal: sclc_cancercell_gardner_2017
-#    - 21 SCLC samples, RNA-seq
-#    - Clinical annotations
-#    - URL: https://www.cbioportal.org/study/summary?id=sclc_cancercell_gardner_2017
+# ============================================================================
+# TIER 2: POTENTIALLY VIABLE (Survival Uncertain, Verify Before Use)
+# ============================================================================
 #
-# 6. GEO: GSE149507 (Stewart et al., 2020)
-#    - SCLC patient-derived xenografts + tumors
-#    - RNA-seq with clinical outcomes
+# 5. GEO: GSE149507
+#    - 18 SCLC tumors + 18 normal, Affymetrix HG-U133 Plus 2.0
+#    - Survival data: UNCERTAIN (check GEO record)
 #
-# 7. cBioPortal: sclc_jhu (Johns Hopkins University)
-#    - RNA-seq expression with clinical data
+# 6. GEO: GSE11969
+#    - Multi-histology lung cancer (Asian), SCLC subset present
+#    - Agilent custom array — verify gene coverage for FAM83F/GNG13
+#    - Has survival data
+#
+# ============================================================================
+# NOT SUITABLE (verified)
+# ============================================================================
+# - sclc_clcgp_2017 (cBioPortal): Genomic/mutation only, no transcriptomics
+# - sclc_jhu (cBioPortal): Exome sequencing only, no expression data
+# - sclc_cancercell_gardner_2017: PDX models, not patient tumors with survival
+# - GSE73160: Cell lines only (NCI SCLC panel), no patient survival
+# - GSE39345: NSCLC (wrong cancer type)
+# - GSE55830: Cell line study (H146, H69), no patient data
+# - GSE40275: 15-19 SCLC, no clear survival data, primarily DEG study
+# - GSE43346: 23 SCLC, no embedded survival data, tumor vs normal only
 #
 # The validation approach:
 #   a) Download expression data for each cohort
