@@ -4976,3 +4976,445 @@ scl_common <- scl_common |>
 
 ```
 
+# Multivariate Cox Regression: Gene Signature Independence from Clinical Stage
+```{r multivariate cox independence}
+# Test whether the 4-gene miRMS signature provides independent prognostic
+# value beyond clinical staging variables (UICC tumor stage, N stage, M stage)
+
+# Prepare clinical variables as factors
+scl_multi <- scl_common %>%
+  filter(!is.na(uicc.tumor.stage) & uicc.tumor.stage != "") %>%
+  filter(!is.na(n.stage) & n.stage != "" & n.stage != "X") %>%
+  filter(!is.na(m.stage) & m.stage != "" & m.stage != "x") %>%
+  mutate(
+    uicc_numeric = case_when(
+      uicc.tumor.stage %in% c("I", "Ia", "Ib", "IB") ~ 1,
+      uicc.tumor.stage %in% c("II", "IIa", "IIb") ~ 2,
+      uicc.tumor.stage %in% c("III", "IIIa", "IIIb") ~ 3,
+      uicc.tumor.stage == "IV" ~ 4,
+      TRUE ~ NA_real_
+    ),
+    n_numeric = as.numeric(gsub("[A-Za-z]", "", n.stage)),
+    m_numeric = case_when(
+      m.stage == "0" ~ 0,
+      m.stage %in% c("1", "1a", "1b") ~ 1,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  filter(!is.na(uicc_numeric) & !is.na(n_numeric) & !is.na(m_numeric))
+
+# Model 1: Clinical variables only
+clinical_only_model <- coxph(
+  Surv(time, vital.status) ~ uicc_numeric + n_numeric + m_numeric,
+  data = scl_multi
+)
+
+# Model 2: Gene signature only
+genes_only_model <- coxph(
+  Surv(time, vital.status) ~ tfrc + fam83f + dlk1 + gng13,
+  data = scl_multi
+)
+
+# Model 3: Combined - gene signature + clinical variables
+combined_model <- coxph(
+  Surv(time, vital.status) ~ tfrc + fam83f + dlk1 + gng13 +
+    uicc_numeric + n_numeric + m_numeric,
+  data = scl_multi
+)
+
+# Print all three models
+cat("=== Model 1: Clinical Variables Only ===\n")
+summary(clinical_only_model)
+
+cat("\n=== Model 2: Gene Signature Only ===\n")
+summary(genes_only_model)
+
+cat("\n=== Model 3: Combined (Genes + Clinical) ===\n")
+summary(combined_model)
+
+# Likelihood ratio test: does adding genes to clinical improve model?
+lr_test <- anova(clinical_only_model, combined_model)
+cat("\n=== Likelihood Ratio Test: Clinical vs Combined ===\n")
+print(lr_test)
+
+# Compare C-indices across models
+cat("\n=== C-index Comparison ===\n")
+cat("Clinical only C-index:", summary(clinical_only_model)$concordance[1], "\n")
+cat("Genes only C-index:", summary(genes_only_model)$concordance[1], "\n")
+cat("Combined C-index:", summary(combined_model)$concordance[1], "\n")
+
+# Forest plot of the combined model showing all variables
+combined_forest <- ggforest(model = combined_model, data = scl_multi)
+
+ggsave(combined_forest, filename = "combined_model_forest_plot.png",
+       path = "Figures/panels/", dpi = 600, width = 10, height = 8, units = "in")
+ggsave(combined_forest, filename = "combined_model_forest_plot.svg",
+       path = "Figures/panels/", dpi = 600, width = 10, height = 8, units = "in")
+```
+
+# Time-Dependent ROC Analysis
+```{r time dependent roc}
+# Time-dependent ROC curves at 1-year, 2-year, and 3-year timepoints
+# to complement the overall C-index with time-specific discrimination
+
+library(timeROC)
+
+# Compute risk scores using the 4-gene signature coefficients
+mirms_coefs <- c(-0.9526172, -0.0854650, -0.0006146, -0.2557644)
+mirms_genes <- c("tfrc", "fam83f", "dlk1", "gng13")
+
+scl_common$mirms_risk <- rowSums(sapply(seq_along(mirms_genes), function(i) {
+  scl_common[, mirms_genes[i]] * mirms_coefs[i]
+}))
+
+# Time-dependent ROC at 1-year (365 days), 2-year (730 days), 3-year (1095 days)
+time_roc <- timeROC(
+  T = scl_common$time,
+  delta = scl_common$vital.status,
+  marker = -scl_common$mirms_risk,  # Negate so higher = higher risk
+  cause = 1,
+  times = c(365, 730, 1095),
+  iid = TRUE
+)
+
+# Print AUC values with confidence intervals
+cat("=== Time-Dependent AUC ===\n")
+cat("1-year AUC:", round(time_roc$AUC[1], 4), "\n")
+cat("2-year AUC:", round(time_roc$AUC[2], 4), "\n")
+cat("3-year AUC:", round(time_roc$AUC[3], 4), "\n")
+
+# Confidence intervals
+ci_1yr <- confint(time_roc)
+print(ci_1yr)
+
+# Plot time-dependent ROC curves
+plot(time_roc, time = 365, col = "red", lwd = 2,
+     title = "Time-Dependent ROC Curves | miRMS Signature")
+plot(time_roc, time = 730, col = "blue", lwd = 2, add = TRUE)
+plot(time_roc, time = 1095, col = "darkgreen", lwd = 2, add = TRUE)
+legend("bottomright",
+       legend = c(
+         paste0("1-year (AUC = ", round(time_roc$AUC[1], 3), ")"),
+         paste0("2-year (AUC = ", round(time_roc$AUC[2], 3), ")"),
+         paste0("3-year (AUC = ", round(time_roc$AUC[3], 3), ")")
+       ),
+       col = c("red", "blue", "darkgreen"), lwd = 2, bty = "n")
+
+# ggplot version for publication
+roc_data <- data.frame()
+for (i in seq_along(c(365, 730, 1095))) {
+  t <- c(365, 730, 1095)[i]
+  t_label <- c("1-year", "2-year", "3-year")[i]
+  idx <- which(time_roc$times == t)
+  tp <- time_roc$TP[, idx]
+  fp <- time_roc$FP[, idx]
+  roc_data <- rbind(roc_data, data.frame(
+    FP = fp, TP = tp,
+    Time = paste0(t_label, " (AUC = ", round(time_roc$AUC[idx], 3), ")")
+  ))
+}
+
+time_roc_plot <- ggplot(roc_data, aes(x = FP, y = TP, color = Time)) +
+  geom_line(linewidth = 1.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  xlab("1 - Specificity") +
+  ylab("Sensitivity") +
+  ggtitle("Time-Dependent ROC | miRMS Signature") +
+  scale_color_manual(values = c("red", "blue", "darkgreen")) +
+  theme(
+    panel.background = element_blank(),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 16, face = "bold"),
+    axis.text = element_text(size = 14),
+    axis.line = element_line(color = "black", linewidth = 1.25),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 12),
+    legend.position = c(0.7, 0.25),
+    legend.background = element_rect(fill = "white", color = "grey80")
+  ) +
+  coord_equal()
+
+ggsave(time_roc_plot, filename = "time_dependent_roc.png",
+       path = "Figures/panels/", dpi = 600, width = 8, height = 8, units = "in")
+ggsave(time_roc_plot, filename = "time_dependent_roc.svg",
+       path = "Figures/panels/", dpi = 600, width = 8, height = 8, units = "in")
+```
+
+# Calibration Analysis
+```{r calibration plot}
+# Calibration plot to assess agreement between predicted and observed survival
+# probabilities at specific timepoints
+
+library(rms)
+
+# Set up the rms data distribution
+dd <- datadist(scl_common[, c(mirms_genes, "time", "vital.status")])
+options(datadist = "dd")
+
+# Fit a Cox model using rms::cph for calibration support
+cph_model <- cph(
+  Surv(time, vital.status) ~ tfrc + fam83f + dlk1 + gng13,
+  data = scl_common,
+  x = TRUE,
+  y = TRUE,
+  surv = TRUE,
+  time.inc = 730  # 2-year calibration
+)
+
+# Calibration at 2 years (730 days)
+cal_2yr <- calibrate(cph_model, u = 730, cmethod = "KM", m = 18, B = 200)
+
+# Plot calibration
+png("Figures/panels/calibration_2yr.png", width = 8, height = 8, units = "in", res = 600)
+plot(cal_2yr,
+     xlab = "Predicted 2-Year Survival Probability",
+     ylab = "Observed 2-Year Survival Probability",
+     main = "Calibration Plot | 2-Year Survival")
+abline(0, 1, lty = 2, col = "grey50")
+dev.off()
+
+svglite::svglite("Figures/panels/calibration_2yr.svg", width = 8, height = 8)
+plot(cal_2yr,
+     xlab = "Predicted 2-Year Survival Probability",
+     ylab = "Observed 2-Year Survival Probability",
+     main = "Calibration Plot | 2-Year Survival")
+abline(0, 1, lty = 2, col = "grey50")
+dev.off()
+
+# Calibration at 1 year (365 days)
+cph_model_1yr <- cph(
+  Surv(time, vital.status) ~ tfrc + fam83f + dlk1 + gng13,
+  data = scl_common,
+  x = TRUE,
+  y = TRUE,
+  surv = TRUE,
+  time.inc = 365
+)
+
+cal_1yr <- calibrate(cph_model_1yr, u = 365, cmethod = "KM", m = 18, B = 200)
+
+png("Figures/panels/calibration_1yr.png", width = 8, height = 8, units = "in", res = 600)
+plot(cal_1yr,
+     xlab = "Predicted 1-Year Survival Probability",
+     ylab = "Observed 1-Year Survival Probability",
+     main = "Calibration Plot | 1-Year Survival")
+abline(0, 1, lty = 2, col = "grey50")
+dev.off()
+
+svglite::svglite("Figures/panels/calibration_1yr.svg", width = 8, height = 8)
+plot(cal_1yr,
+     xlab = "Predicted 1-Year Survival Probability",
+     ylab = "Observed 1-Year Survival Probability",
+     main = "Calibration Plot | 1-Year Survival")
+abline(0, 1, lty = 2, col = "grey50")
+dev.off()
+
+cat("=== Calibration Summary ===\n")
+print(cal_2yr)
+print(cal_1yr)
+```
+
+# External Validation Cohorts
+```{r external validation setup}
+# External validation of the 4-gene miRMS signature (TFRC, FAM83F, DLK1, GNG13)
+# on independent SCLC cohorts with survival data.
+#
+# Candidate cohorts identified for validation:
+#
+# 1. cBioPortal: sclc_clcgp_2017 (CLCGP, Clinical Lung Cancer Genome Project)
+#    - 85 SCLC tumor samples, RNA-seq
+#    - Clinical data with survival
+#    - URL: https://www.cbioportal.org/study/summary?id=sclc_clcgp_2017
+#
+# 2. GEO: GSE60052 (Sato et al., 2013)
+#    - 79 SCLC patient samples, Affymetrix microarray (HG-U133 Plus 2.0)
+#    - Survival data available
+#    - TFRC, DLK1, GNG13 probes present; FAM83F may need alias lookup
+#
+# 3. GEO: GSE40275 (Mossé et al.)
+#    - SCLC cell lines + patient samples with survival
+#    - Affymetrix microarray
+#
+# 4. GEO: GSE43346 (Sato et al.)
+#    - 23 SCLC samples, expression profiling
+#    - Survival available
+#
+# 5. cBioPortal: sclc_cancercell_gardner_2017
+#    - 21 SCLC samples, RNA-seq
+#    - Clinical annotations
+#    - URL: https://www.cbioportal.org/study/summary?id=sclc_cancercell_gardner_2017
+#
+# 6. GEO: GSE149507 (Stewart et al., 2020)
+#    - SCLC patient-derived xenografts + tumors
+#    - RNA-seq with clinical outcomes
+#
+# 7. cBioPortal: sclc_jhu (Johns Hopkins University)
+#    - RNA-seq expression with clinical data
+#
+# The validation approach:
+#   a) Download expression data for each cohort
+#   b) Extract the 4 signature genes (handling gene name aliases)
+#   c) Apply the trained risk score formula:
+#      Risk = -0.9526172*TFRC - 0.0854650*FAM83F - 0.0006146*DLK1 - 0.2557644*GNG13
+#   d) Stratify patients into high/low risk using the median risk score
+#   e) Evaluate via KM survival analysis and C-index
+
+# Function to validate signature on an external cohort
+validate_external_cohort <- function(expr_data,
+                                     clinical_data,
+                                     signature_genes = c("tfrc", "fam83f", "dlk1", "gng13"),
+                                     signature_coefs = c(-0.9526172, -0.0854650, -0.0006146, -0.2557644),
+                                     cohort_name = "External Cohort",
+                                     time_col = "time",
+                                     status_col = "vital.status",
+                                     log_transform = TRUE) {
+
+  results <- list()
+
+  # Ensure gene names are lowercase
+  colnames(expr_data) <- tolower(colnames(expr_data))
+  signature_genes <- tolower(signature_genes)
+
+  # Check which signature genes are available
+  available_genes <- intersect(signature_genes, colnames(expr_data))
+  missing_genes <- setdiff(signature_genes, available_genes)
+
+  if (length(missing_genes) > 0) {
+    cat("Warning: Missing genes in", cohort_name, ":", paste(missing_genes, collapse = ", "), "\n")
+  }
+
+  if (length(available_genes) < 3) {
+    cat("Error: Fewer than 3 signature genes available. Skipping", cohort_name, "\n")
+    return(NULL)
+  }
+
+  # Use only available genes and their corresponding coefficients
+  gene_idx <- match(available_genes, signature_genes)
+  used_coefs <- signature_coefs[gene_idx]
+
+  # Optional log2 transform if data is not already log-transformed
+  if (log_transform) {
+    expr_subset <- log2(expr_data[, available_genes, drop = FALSE] + 1)
+  } else {
+    expr_subset <- expr_data[, available_genes, drop = FALSE]
+  }
+
+  # Compute risk scores
+  risk_scores <- rowSums(sapply(seq_along(available_genes), function(i) {
+    expr_subset[, available_genes[i]] * used_coefs[i]
+  }))
+
+  # Stratify by median
+  median_risk <- median(risk_scores)
+  risk_group <- ifelse(risk_scores > median_risk, "high", "low")
+
+  # Build survival data frame
+  surv_df <- data.frame(
+    time = clinical_data[[time_col]],
+    vital.status = clinical_data[[status_col]],
+    risk = risk_group,
+    risk_score = risk_scores
+  )
+  surv_df <- surv_df[complete.cases(surv_df), ]
+
+  # KM analysis
+  km_fit <- survfit(Surv(time, vital.status) ~ risk, data = surv_df)
+  logrank <- survdiff(Surv(time, vital.status) ~ risk, data = surv_df)
+  p_value <- 1 - pchisq(logrank$chisq, df = 1)
+
+  # C-index
+  cox_ext <- coxph(Surv(time, vital.status) ~ risk_score, data = surv_df)
+  c_index <- summary(cox_ext)$concordance[1]
+  c_index_se <- summary(cox_ext)$concordance[2]
+
+  cat("\n=== External Validation:", cohort_name, "===\n")
+  cat("Patients:", nrow(surv_df), "\n")
+  cat("Genes used:", paste(available_genes, collapse = ", "), "\n")
+  cat("C-index:", round(c_index, 4), "(SE:", round(c_index_se, 4), ")\n")
+  cat("Log-rank p-value:", format.pval(p_value, digits = 3), "\n")
+
+  # KM plot
+  ext_km_plot <- ggsurvplot(
+    fit = km_fit,
+    data = surv_df,
+    conf.int = TRUE,
+    pval = TRUE,
+    pval.size = 5,
+    palette = c("red", "blue"),
+    censor.shape = "|",
+    surv.median.line = "hv",
+    size = 1.5,
+    censor.size = 4.5,
+    xlab = "Time (days)",
+    legend.title = "Risk",
+    title = paste0("External Validation | ", cohort_name),
+    legend.labs = c("High risk", "Low risk"),
+    ggtheme = theme(
+      axis.line = element_line(color = "black", linewidth = 1.25, lineend = "round"),
+      axis.title = element_text(size = 18, face = "bold"),
+      plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+      axis.text = element_text(size = 16),
+      axis.ticks = element_line(linewidth = 1.25),
+      legend.title = element_text(size = 16, face = "bold"),
+      legend.text = element_text(size = 14),
+      panel.background = element_blank()
+    )
+  )
+
+  ggsave(ext_km_plot$plot,
+         filename = paste0("external_validation_", gsub(" ", "_", tolower(cohort_name)), ".png"),
+         path = "Figures/panels/", dpi = 600, width = 8, height = 8, units = "in")
+  ggsave(ext_km_plot$plot,
+         filename = paste0("external_validation_", gsub(" ", "_", tolower(cohort_name)), ".svg"),
+         path = "Figures/panels/", dpi = 600, width = 8, height = 8, units = "in")
+
+  # Time-dependent ROC for external cohort
+  ext_time_roc <- tryCatch({
+    timeROC(
+      T = surv_df$time,
+      delta = surv_df$vital.status,
+      marker = -surv_df$risk_score,
+      cause = 1,
+      times = c(365, 730, 1095),
+      iid = TRUE
+    )
+  }, error = function(e) {
+    cat("Time-dependent ROC failed for", cohort_name, ":", e$message, "\n")
+    NULL
+  })
+
+  if (!is.null(ext_time_roc)) {
+    cat("External 1-year AUC:", round(ext_time_roc$AUC[1], 4), "\n")
+    cat("External 2-year AUC:", round(ext_time_roc$AUC[2], 4), "\n")
+    cat("External 3-year AUC:", round(ext_time_roc$AUC[3], 4), "\n")
+  }
+
+  results[["KM_Plot"]] <- ext_km_plot
+  results[["C_index"]] <- c_index
+  results[["C_index_SE"]] <- c_index_se
+  results[["P_value"]] <- p_value
+  results[["Surv_DF"]] <- surv_df
+  results[["Time_ROC"]] <- ext_time_roc
+  results[["Cohort_Name"]] <- cohort_name
+  results[["N_patients"]] <- nrow(surv_df)
+
+  return(results)
+}
+
+# Placeholder: Download and load each external cohort
+# Users should download data files from GEO/cBioPortal and place them in Data/external/
+#
+# Example usage for cBioPortal cohort:
+#   ext_expr <- read_tsv("Data/external/sclc_clcgp_2017/data_mrna_seq_rpkm.txt")
+#   ext_clinical <- read_tsv("Data/external/sclc_clcgp_2017/data_clinical_patient.txt")
+#   # Preprocess similarly to training data...
+#   results_clcgp <- validate_external_cohort(ext_expr, ext_clinical, cohort_name = "CLCGP 2017")
+#
+# Example usage for GEO cohort:
+#   library(GEOquery)
+#   gse <- getGEO("GSE60052")
+#   ext_expr <- exprs(gse[[1]])
+#   ext_clinical <- pData(gse[[1]])
+#   results_gse60052 <- validate_external_cohort(ext_expr, ext_clinical, cohort_name = "GSE60052")
+```
+
