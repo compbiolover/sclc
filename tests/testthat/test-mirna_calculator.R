@@ -546,6 +546,137 @@ test_that("load_targetscan_bulk works without family mapping (direct miRNA match
   unlink(ts_f)
 })
 
+# =============================================================================
+# Tests for filter_mirnas_from_geo (pre-computed DE results mode)
+# =============================================================================
+
+test_that("filter_mirnas_from_geo loads pre-computed DE results and filters correctly", {
+  de_f <- tempfile(fileext = ".csv")
+  de_data <- data.frame(
+    mirna = c("hsa-miR-1", "hsa-miR-21", "hsa-miR-200c", "hsa-miR-99"),
+    log2fc = c(2.5, -1.8, 0.3, -3.0),
+    adj_p_value = c(0.001, 0.01, 0.2, 0.001),
+    stringsAsFactors = FALSE
+  )
+  write.csv(de_data, de_f, row.names = FALSE)
+
+  result <- filter_mirnas_from_geo(
+    de_results_path = de_f,
+    fdr_threshold = 0.05,
+    min_log2fc = 1.0,
+    verbose = FALSE
+  )
+
+  # miR-1 (log2FC=2.5, FDR=0.001) -> passes (up)
+  # miR-21 (log2FC=-1.8, FDR=0.01) -> passes (down)
+  # miR-200c (log2FC=0.3) -> fails min_log2fc
+  # miR-99 (log2FC=-3.0, FDR=0.001) -> passes (down)
+  expect_equal(nrow(result), 3)
+  expect_true("hsa-miR-1" %in% result$mirna)
+  expect_true("hsa-miR-21" %in% result$mirna)
+  expect_true("hsa-miR-99" %in% result$mirna)
+  expect_false("hsa-miR-200c" %in% result$mirna)
+
+  # Check direction assignment
+  expect_equal(result$direction[result$mirna == "hsa-miR-1"], "up")
+  expect_equal(result$direction[result$mirna == "hsa-miR-21"], "down")
+
+  # Check abs_log2fc
+  expect_equal(result$abs_log2fc[result$mirna == "hsa-miR-1"], 2.5)
+
+  unlink(de_f)
+})
+
+test_that("filter_mirnas_from_geo respects mirna_remove parameter", {
+  de_f <- tempfile(fileext = ".csv")
+  de_data <- data.frame(
+    mirna = c("hsa-miR-1", "hsa-miR-21"),
+    log2fc = c(2.5, -1.8),
+    adj_p_value = c(0.001, 0.01),
+    stringsAsFactors = FALSE
+  )
+  write.csv(de_data, de_f, row.names = FALSE)
+
+  result <- filter_mirnas_from_geo(
+    de_results_path = de_f,
+    fdr_threshold = 0.05,
+    min_log2fc = 1.0,
+    mirna_remove = "hsa-miR-1",
+    verbose = FALSE
+  )
+
+  expect_equal(nrow(result), 1)
+  expect_equal(result$mirna, "hsa-miR-21")
+
+  unlink(de_f)
+})
+
+test_that("filter_mirnas_from_geo returns both directions", {
+  de_f <- tempfile(fileext = ".csv")
+  de_data <- data.frame(
+    mirna = c("hsa-miR-1", "hsa-miR-21", "hsa-miR-99"),
+    log2fc = c(3.0, -2.5, -1.5),
+    adj_p_value = c(0.001, 0.001, 0.01),
+    stringsAsFactors = FALSE
+  )
+  write.csv(de_data, de_f, row.names = FALSE)
+
+  result <- filter_mirnas_from_geo(
+    de_results_path = de_f,
+    fdr_threshold = 0.05,
+    min_log2fc = 1.0,
+    verbose = FALSE
+  )
+
+  # All three pass: both up and down are included
+  expect_equal(nrow(result), 3)
+  expect_true("up" %in% result$direction)
+  expect_true("down" %in% result$direction)
+
+  unlink(de_f)
+})
+
+test_that("filter_mirnas_from_geo rejects malformed DE results file", {
+  de_f <- tempfile(fileext = ".csv")
+  bad_data <- data.frame(
+    gene = c("TP53"),
+    score = c(0.5),
+    stringsAsFactors = FALSE
+  )
+  write.csv(bad_data, de_f, row.names = FALSE)
+
+  expect_error(
+    filter_mirnas_from_geo(de_results_path = de_f, verbose = FALSE),
+    "must have columns"
+  )
+
+  unlink(de_f)
+})
+
+test_that("filter_mirnas_from_geo respects max_mirnas limit", {
+  de_f <- tempfile(fileext = ".csv")
+  de_data <- data.frame(
+    mirna = paste0("hsa-miR-", 1:50),
+    log2fc = seq(5, 1, length.out = 50),
+    adj_p_value = seq(0.001, 0.04, length.out = 50),
+    stringsAsFactors = FALSE
+  )
+  write.csv(de_data, de_f, row.names = FALSE)
+
+  result <- filter_mirnas_from_geo(
+    de_results_path = de_f,
+    fdr_threshold = 0.05,
+    min_log2fc = 1.0,
+    max_mirnas = 10,
+    verbose = FALSE
+  )
+
+  expect_lte(nrow(result), 10)
+
+  unlink(de_f)
+})
+
+
 test_that("validate_mirna_inputs rejects non-existent targetscan_path", {
   mirmap_f <- tempfile(fileext = ".csv")
   dbdemc_f <- tempfile(fileext = ".txt")

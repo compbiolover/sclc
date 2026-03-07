@@ -3,8 +3,11 @@
 # Purpose: Multi-database miRNA target gene ranking with confidence weighting.
 #
 # Approach:
-#   1. Filter miRNAs to those dysregulated in the cancer of interest (dbDEMC)
-#      AND confirmed in miRmap
+#   1. Identify cancer-dysregulated miRNAs via:
+#      - PREFERRED: GEO differential expression (e.g., GSE19945 for SCLC)
+#        with limma, using both up- and down-regulated miRNAs, weighted by
+#        fold change magnitude
+#      - FALLBACK: dbDEMC + miRmap intersection (generic "lung cancer")
 #   2. Query three target prediction databases:
 #      - TargetScan 8.0 (CNN-based biochemical model; McGeary et al., 2019)
 #        Preferred: load bulk download files locally (no web scraping)
@@ -153,9 +156,242 @@ validate_mirna_inputs <- function(mirmap_path,
 # miRNA filtering
 # =============================================================================
 
-#' Filter miRNAs to cancer-dysregulated set
+#' Identify differentially expressed miRNAs from GEO expression data
 #'
-#' Intersects miRmap miRNAs with dbDEMC cancer-associated miRNAs.
+#' Downloads a miRNA expression dataset from GEO (default: GSE19945, which
+#' contains 35 SCLC vs 8 normal lung samples) and performs differential
+#' expression analysis with limma. This replaces the dbDEMC approach of using
+#' a generic "lung cancer" label with actual SCLC-specific differential
+#' expression, complete with fold changes and FDR-adjusted p-values.
+#'
+#' Both upregulated and downregulated miRNAs are returned, since:
+#' - Upregulated miRNAs repress tumor suppressor targets
+#' - Downregulated miRNAs de-repress oncogene targets
+#' Both directions yield biologically relevant target genes.
+#'
+#' @param geo_accession GEO Series accession (default "GSE19945" for SCLC).
+#' @param case_group Character string or regex pattern identifying case
+#'   (disease) samples in the sample titles/characteristics. Default "SCLC".
+#' @param control_group Character string or regex identifying control samples.
+#'   Default "Normal|normal|Adjacent normal".
+#' @param fdr_threshold FDR (Benjamini-Hochberg) threshold for significance.
+#'   Default 0.05.
+#' @param min_log2fc Minimum absolute log2 fold change. Default 1.0 (2-fold).
+#' @param mirna_remove Character vector of miRNAs to exclude.
+#' @param max_mirnas Maximum number of DE miRNAs to retain (ordered by
+#'   significance, not fold change). Default 808.
+#' @param de_results_path Optional path to a pre-computed DE results CSV file
+#'   (columns: mirna, log2fc, adj_p_value). If provided, GEO download and
+#'   limma analysis are skipped. This allows you to run the analysis once,
+#'   save the results, and reuse them without re-downloading.
+#' @param save_de_results Logical; if TRUE, save the full DE results table to
+#'   output_path for future reuse via de_results_path.
+#' @param output_path Path to save DE results CSV.
+#' @param verbose Print diagnostic messages.
+#'
+#' @return A data frame with columns:
+#'   - mirna: miRNA name (miRBase ID)
+#'   - log2fc: log2 fold change (positive = upregulated in disease)
+#'   - adj_p_value: BH-adjusted p-value
+#'   - direction: "up" or "down"
+#'   - abs_log2fc: absolute log2 fold change (for weighting)
+#'   Sorted by adj_p_value (most significant first).
+filter_mirnas_from_geo <- function(geo_accession = "GSE19945",
+                                   case_group = "SCLC",
+                                   control_group = "Normal|normal|Adjacent normal",
+                                   fdr_threshold = 0.05,
+                                   min_log2fc = 1.0,
+                                   mirna_remove = character(0),
+                                   max_mirnas = 808,
+                                   de_results_path = NULL,
+                                   save_de_results = TRUE,
+                                   output_path = "Outputs/mirna/sclc_de_mirnas.csv",
+                                   verbose = TRUE) {
+  # If pre-computed results exist, load and filter them
+  if (!is.null(de_results_path) && file.exists(de_results_path)) {
+    if (verbose) message(sprintf("Loading pre-computed DE results from %s",
+                                  de_results_path))
+    de_results <- read.csv(de_results_path, stringsAsFactors = FALSE)
+
+    if (!all(c("mirna", "log2fc", "adj_p_value") %in% colnames(de_results))) {
+      stop("DE results file must have columns: mirna, log2fc, adj_p_value")
+    }
+
+    de_sig <- de_results %>%
+      dplyr::filter(adj_p_value < fdr_threshold & abs(log2fc) >= min_log2fc) %>%
+      dplyr::mutate(
+        direction = ifelse(log2fc > 0, "up", "down"),
+        abs_log2fc = abs(log2fc)
+      ) %>%
+      dplyr::filter(!mirna %in% mirna_remove) %>%
+      dplyr::arrange(adj_p_value)
+
+    if (nrow(de_sig) > max_mirnas) {
+      de_sig <- de_sig[1:max_mirnas, ]
+    }
+
+    if (verbose) {
+      message(sprintf("DE miRNAs passing filters: %d (FDR < %.2f, |log2FC| >= %.1f)",
+                      nrow(de_sig), fdr_threshold, min_log2fc))
+      message(sprintf("  Upregulated: %d", sum(de_sig$direction == "up")))
+      message(sprintf("  Downregulated: %d", sum(de_sig$direction == "down")))
+    }
+
+    return(de_sig)
+  }
+
+  # Otherwise, run fresh GEO download + limma analysis
+  if (!requireNamespace("GEOquery", quietly = TRUE)) {
+    stop("Package 'GEOquery' is required. Install with: BiocManager::install('GEOquery')")
+  }
+  if (!requireNamespace("limma", quietly = TRUE)) {
+    stop("Package 'limma' is required. Install with: BiocManager::install('limma')")
+  }
+
+  if (verbose) message(sprintf("Downloading %s from GEO...", geo_accession))
+  gse <- GEOquery::getGEO(geo_accession, GSEMatrix = TRUE, getGPL = FALSE)
+
+  if (is.list(gse)) {
+    gse <- gse[[1]]
+  }
+
+  # Extract expression matrix and sample info
+  expr_mat <- Biobase::exprs(gse)
+  pheno <- Biobase::pData(gse)
+
+  if (verbose) {
+    message(sprintf("  Samples: %d, Features: %d", ncol(expr_mat), nrow(expr_mat)))
+  }
+
+  # Identify case and control samples from phenotype data
+  # Search across all character columns for the group labels
+  sample_labels <- rep(NA_character_, nrow(pheno))
+  search_cols <- sapply(pheno, is.character)
+  search_text <- apply(pheno[, search_cols, drop = FALSE], 1, paste, collapse = " ")
+
+  sample_labels[grepl(case_group, search_text, ignore.case = TRUE)] <- "case"
+  sample_labels[grepl(control_group, search_text, ignore.case = TRUE)] <- "control"
+
+  # Remove ambiguous samples (matched both or neither)
+  case_and_control <- sample_labels == "case" &
+    grepl(control_group, search_text, ignore.case = TRUE)
+  sample_labels[case_and_control] <- NA
+
+  if (sum(sample_labels == "case", na.rm = TRUE) == 0) {
+    stop(sprintf("No case samples matched pattern '%s'. Check case_group.",
+                 case_group))
+  }
+  if (sum(sample_labels == "control", na.rm = TRUE) == 0) {
+    stop(sprintf("No control samples matched pattern '%s'. Check control_group.",
+                 control_group))
+  }
+
+  # Filter to labeled samples only
+  keep <- !is.na(sample_labels)
+  expr_mat <- expr_mat[, keep]
+  sample_labels <- sample_labels[keep]
+
+  if (verbose) {
+    message(sprintf("  Case samples: %d, Control samples: %d",
+                    sum(sample_labels == "case"),
+                    sum(sample_labels == "control")))
+  }
+
+  # limma differential expression
+  group <- factor(sample_labels, levels = c("control", "case"))
+  design <- model.matrix(~ group)
+
+  fit <- limma::lmFit(expr_mat, design)
+  fit <- limma::eBayes(fit)
+  results <- limma::topTable(fit, coef = 2, number = Inf, sort.by = "none")
+
+  # Extract miRNA names from feature annotation
+  feat_data <- Biobase::fData(gse)
+  if (!is.null(feat_data) && nrow(feat_data) > 0) {
+    # Look for miRNA name column
+    mirna_name_col <- grep("^miRNA|^ID$|^NAME$|^Gene\\.?Symbol|^Symbol",
+                            colnames(feat_data), value = TRUE, ignore.case = TRUE)
+    if (length(mirna_name_col) > 0) {
+      # Use annotation to get miRNA names, matching by rownames
+      common_features <- intersect(rownames(results), rownames(feat_data))
+      results <- results[common_features, ]
+      results$mirna <- feat_data[common_features, mirna_name_col[1]]
+    } else {
+      results$mirna <- rownames(results)
+    }
+  } else {
+    results$mirna <- rownames(results)
+  }
+
+  # Build clean DE results table
+  de_all <- data.frame(
+    mirna = results$mirna,
+    log2fc = results$logFC,
+    adj_p_value = results$adj.P.Val,
+    avg_expr = results$AveExpr,
+    t_stat = results$t,
+    stringsAsFactors = FALSE
+  )
+
+  # Remove rows with missing miRNA names
+  de_all <- de_all[!is.na(de_all$mirna) & de_all$mirna != "", ]
+
+  # Save full results for reuse
+  if (save_de_results && !is.null(output_path)) {
+    out_dir <- dirname(output_path)
+    if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+    write.csv(de_all, output_path, row.names = FALSE)
+    if (verbose) message(sprintf("  Full DE results saved to: %s", output_path))
+  }
+
+  # Filter to significant DE miRNAs
+  de_sig <- de_all %>%
+    dplyr::filter(adj_p_value < fdr_threshold & abs(log2fc) >= min_log2fc) %>%
+    dplyr::mutate(
+      direction = ifelse(log2fc > 0, "up", "down"),
+      abs_log2fc = abs(log2fc)
+    ) %>%
+    dplyr::filter(!mirna %in% mirna_remove) %>%
+    dplyr::arrange(adj_p_value)
+
+  if (nrow(de_sig) > max_mirnas) {
+    de_sig <- de_sig[1:max_mirnas, ]
+  }
+
+  if (verbose) {
+    message(sprintf("\n===== SCLC Differential Expression Results ====="))
+    message(sprintf("Total miRNAs tested: %d", nrow(de_all)))
+    message(sprintf("DE miRNAs (FDR < %.2f, |log2FC| >= %.1f): %d",
+                    fdr_threshold, min_log2fc, nrow(de_sig)))
+    message(sprintf("  Upregulated in %s: %d", case_group,
+                    sum(de_sig$direction == "up")))
+    message(sprintf("  Downregulated in %s: %d", case_group,
+                    sum(de_sig$direction == "down")))
+    if (nrow(de_sig) > 0) {
+      message("Top 10 DE miRNAs:")
+      top <- head(de_sig, 10)
+      for (i in seq_len(nrow(top))) {
+        message(sprintf("  %s: log2FC=%.2f, FDR=%.1e (%s)",
+                        top$mirna[i], top$log2fc[i], top$adj_p_value[i],
+                        top$direction[i]))
+      }
+    }
+  }
+
+  de_sig
+}
+
+
+#' Filter miRNAs to cancer-dysregulated set (dbDEMC fallback)
+#'
+#' Intersects miRmap miRNAs with dbDEMC cancer-associated miRNAs. This is the
+#' legacy approach — prefer filter_mirnas_from_geo() for SCLC-specific analysis
+#' with proper differential expression statistics.
+#'
+#' Limitations of this approach:
+#' - dbDEMC groups all lung cancers together (NSCLC + SCLC)
+#' - Only uses one direction (up OR down) at a time
+#' - No fold change or p-value information — just a binary list
 #'
 #' @param mirmap_path Path to miRmap CSV.
 #' @param dbdemc_path Path to dbDEMC file.
@@ -778,29 +1014,53 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 
 #' Multi-database miRNA target gene calculator
 #'
-#' Queries TargetScan, miRDB, and miRTarBase for miRNA-gene interactions,
-#' applies literature-established confidence thresholds, requires multi-database
-#' consensus, and produces confidence-weighted gene rankings.
+#' Identifies cancer-dysregulated miRNAs, queries their gene targets across
+#' TargetScan, miRDB, and miRTarBase, applies literature-established confidence
+#' thresholds, requires multi-database consensus, and produces confidence-
+#' weighted gene rankings.
 #'
-#' For TargetScan, the preferred approach is to download the TargetScan 8.0
-#' bulk prediction files locally. These include CNN-based biochemical model
+#' miRNA filtering (Step 1) has two modes:
+#'
+#'   **GEO-based (preferred for SCLC):** Downloads SCLC miRNA expression data
+#'   from GEO (default: GSE19945, 35 SCLC vs 8 normal) and runs limma
+#'   differential expression. This provides SCLC-specific miRNAs with actual
+#'   fold changes and FDR-adjusted p-values, and uses BOTH directions (up and
+#'   down) simultaneously. Set use_geo = TRUE (default).
+#'
+#'   **dbDEMC fallback:** Uses pre-compiled cancer-miRNA associations from
+#'   dbDEMC. Only uses one direction at a time, and groups all lung cancers
+#'   together. Set use_geo = FALSE.
+#'
+#' For TargetScan (Step 2), the preferred approach is to download the TargetScan
+#' 8.0 bulk prediction files locally. These include CNN-based biochemical model
 #' scores (McGeary et al., 2019, Science) that outperform the older context++
-#' scores (Agarwal et al., 2015) by ~50%. If bulk files are provided via
-#' targetscan_path, they are used instead of web scraping via hoardeR.
+#' scores (Agarwal et al., 2015) by ~50%.
 #'
+#' @param use_geo Logical; if TRUE (default), use GEO-based differential
+#'   expression for miRNA filtering. If FALSE, fall back to dbDEMC.
+#' @param geo_accession GEO accession for miRNA expression data.
+#'   Default "GSE19945" (35 SCLC vs 8 normal lung, Agilent miRNA array).
+#' @param case_group Regex pattern to identify disease samples in GEO metadata.
+#'   Default "SCLC".
+#' @param control_group Regex pattern to identify control samples.
+#'   Default "Normal|normal|Adjacent normal".
+#' @param de_fdr_threshold FDR threshold for GEO differential expression.
+#'   Default 0.05.
+#' @param de_min_log2fc Minimum absolute log2 fold change for DE miRNAs.
+#'   Default 1.0 (2-fold change).
+#' @param de_results_path Path to pre-computed DE results CSV. If provided and
+#'   the file exists, GEO download is skipped. Allows one-time analysis with
+#'   reuse across runs.
 #' @param targetscan_path Path to TargetScan 8.0 bulk predictions file, or NULL
 #'   to fall back to hoardeR web queries. Download from:
 #'   https://www.targetscan.org/cgi-bin/targetscan/data_download.vert80.cgi
 #'   Recommended file: Summary_Counts.default_predictions.txt (CNN-based).
 #' @param ts_family_path Path to TargetScan miR_Family_Info.txt for mapping
-#'   miRNA families to individual mature miRNA names. Only needed when using
-#'   targetscan_path. Download from the same page.
+#'   miRNA families to individual mature miRNA names. Download from same page.
 #' @param ts_org TargetScan species (default "Human"). Only used when falling
 #'   back to hoardeR web queries.
-#' @param ts_version TargetScan release (default "8.0"). Only used when falling
-#'   back to hoardeR web queries.
-#' @param ts_max_targets Max targets to retrieve per miRNA from TargetScan.
-#'   Only used when falling back to hoardeR web queries.
+#' @param ts_version TargetScan release (default "8.0"). Only used with hoardeR.
+#' @param ts_max_targets Max targets per miRNA from hoardeR web queries.
 #' @param ts_context_threshold TargetScan context++ score threshold. Interactions
 #'   with scores <= this value are kept. Default -0.2 per Agarwal et al. (2015).
 #' @param mirdb_path Path to miRDB predictions file, or NULL to skip miRDB.
@@ -810,24 +1070,34 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 #' @param mirtarbase_strong_only Logical; only use strong experimental evidence.
 #' @param min_databases Minimum databases for consensus (default 2).
 #'   Interactions with strong miRTarBase evidence always pass regardless.
-#' @param cancer_type Cancer type for dbDEMC filtering.
-#' @param status Dysregulation direction ("up" or "down").
+#' @param cancer_type Cancer type for dbDEMC filtering (only used when
+#'   use_geo = FALSE).
+#' @param status Dysregulation direction for dbDEMC ("up" or "down"). Only used
+#'   when use_geo = FALSE. When use_geo = TRUE, both directions are used.
 #' @param mirna_remove Character vector of miRNAs to exclude.
 #' @param max_mirnas Maximum miRNAs to use.
-#' @param mirmap_path Path to miRmap miRNAs CSV.
-#' @param dbdemc_path Path to dbDEMC file. If NULL, auto-selects based on
-#'   cancer_up parameter.
+#' @param mirmap_path Path to miRmap miRNAs CSV (only used when use_geo = FALSE).
+#' @param dbdemc_path Path to dbDEMC file (only used when use_geo = FALSE).
+#'   If NULL, auto-selects based on cancer_up parameter.
 #' @param cancer_up Logical; TRUE for upregulated, FALSE for downregulated.
-#'   Used to select dbDEMC file when dbdemc_path is NULL.
+#'   Only used when use_geo = FALSE.
 #' @param save_outputs Logical; save ranking and consensus data to files.
 #' @param output_dir Directory for output files.
 #' @param output_prefix Prefix for output filenames.
 #' @param verbose Print progress messages.
 #'
 #' @return Named numeric vector of gene scores (sums to 1), sorted descending.
-#'   Also invisibly returns a list with the full consensus data frame
-#'   as an attribute "consensus_details".
-mirna_calculator <- function(targetscan_path = "Data/mirna_data/Summary_Counts.default_predictions.txt",
+#'   The consensus data frame is attached as attribute "consensus_details".
+#'   When use_geo = TRUE, the DE miRNA table is attached as attribute
+#'   "de_mirnas" (includes log2fc, FDR, direction for each miRNA).
+mirna_calculator <- function(use_geo = TRUE,
+                             geo_accession = "GSE19945",
+                             case_group = "SCLC",
+                             control_group = "Normal|normal|Adjacent normal",
+                             de_fdr_threshold = 0.05,
+                             de_min_log2fc = 1.0,
+                             de_results_path = NULL,
+                             targetscan_path = "Data/mirna_data/Summary_Counts.default_predictions.txt",
                              ts_family_path = "Data/mirna_data/miR_Family_Info.txt",
                              ts_org = "Human",
                              ts_version = "8.0",
@@ -853,51 +1123,90 @@ mirna_calculator <- function(targetscan_path = "Data/mirna_data/Summary_Counts.d
     library(dplyr)
   })
 
-  # Auto-select dbDEMC file if not provided
-  if (is.null(dbdemc_path)) {
-    dbdemc_path <- if (cancer_up) {
-      "Data/mirna_data/dbdemc_2.0_high.txt"
-    } else {
-      "Data/mirna_data/dbdemc_2.0_low.txt"
-    }
-  }
-
-  # Validate inputs
-  validate_mirna_inputs(
-    mirmap_path = mirmap_path,
-    dbdemc_path = dbdemc_path,
-    mirdb_path = mirdb_path,
-    mirtarbase_path = mirtarbase_path,
-    targetscan_path = targetscan_path,
-    ts_family_path = ts_family_path,
-    cancer_type = cancer_type,
-    status = status,
-    ts_context_threshold = ts_context_threshold,
-    mirdb_score_threshold = mirdb_score_threshold,
-    min_databases = min_databases
-  )
-
   if (save_outputs && !dir.exists(output_dir)) {
     dir.create(output_dir, recursive = TRUE)
   }
 
+  # =========================================================================
   # Step 1: Filter miRNAs to cancer-associated set
-  if (verbose) message("\n========== Step 1: Filter cancer-associated miRNAs ==========")
-  common_mirnas <- filter_cancer_mirnas(
-    mirmap_path = mirmap_path,
-    dbdemc_path = dbdemc_path,
-    cancer_type = cancer_type,
-    status = status,
-    mirna_remove = mirna_remove,
-    max_mirnas = max_mirnas,
-    verbose = verbose
-  )
+  # =========================================================================
+  if (verbose) message("\n========== Step 1: Identify cancer-associated miRNAs ==========")
 
-  if (length(common_mirnas) == 0) {
-    stop("No miRNAs passed cancer filtering. Check cancer_type and status.")
+  de_mirna_df <- NULL
+
+  if (use_geo) {
+    # GEO-based: SCLC-specific limma differential expression (preferred)
+    if (verbose) message("Using GEO-based differential expression (SCLC-specific)")
+
+    de_mirna_df <- filter_mirnas_from_geo(
+      geo_accession = geo_accession,
+      case_group = case_group,
+      control_group = control_group,
+      fdr_threshold = de_fdr_threshold,
+      min_log2fc = de_min_log2fc,
+      mirna_remove = mirna_remove,
+      max_mirnas = max_mirnas,
+      de_results_path = de_results_path,
+      save_de_results = save_outputs,
+      output_path = file.path(output_dir, "sclc_de_mirnas.csv"),
+      verbose = verbose
+    )
+
+    common_mirnas <- de_mirna_df$mirna
+
+    if (length(common_mirnas) == 0) {
+      stop("No miRNAs passed differential expression filters. ",
+           "Try relaxing de_fdr_threshold or de_min_log2fc.")
+    }
+  } else {
+    # dbDEMC fallback (legacy approach)
+    if (verbose) {
+      message("Using dbDEMC filtering (legacy approach)")
+      message("  Note: dbDEMC groups all lung cancers together and only uses one direction.")
+      message("  Consider use_geo = TRUE for SCLC-specific filtering.")
+    }
+
+    if (is.null(dbdemc_path)) {
+      dbdemc_path <- if (cancer_up) {
+        "Data/mirna_data/dbdemc_2.0_high.txt"
+      } else {
+        "Data/mirna_data/dbdemc_2.0_low.txt"
+      }
+    }
+
+    # Validate dbDEMC-specific inputs
+    validate_mirna_inputs(
+      mirmap_path = mirmap_path,
+      dbdemc_path = dbdemc_path,
+      mirdb_path = mirdb_path,
+      mirtarbase_path = mirtarbase_path,
+      targetscan_path = targetscan_path,
+      ts_family_path = ts_family_path,
+      cancer_type = cancer_type,
+      status = status,
+      ts_context_threshold = ts_context_threshold,
+      mirdb_score_threshold = mirdb_score_threshold,
+      min_databases = min_databases
+    )
+
+    common_mirnas <- filter_cancer_mirnas(
+      mirmap_path = mirmap_path,
+      dbdemc_path = dbdemc_path,
+      cancer_type = cancer_type,
+      status = status,
+      mirna_remove = mirna_remove,
+      max_mirnas = max_mirnas,
+      verbose = verbose
+    )
+
+    if (length(common_mirnas) == 0) {
+      stop("No miRNAs passed cancer filtering. Check cancer_type and status.")
+    }
   }
 
-  # Step 2: Query databases
+  # =========================================================================
+  # Step 2: Query target prediction databases
+  # =========================================================================
   if (verbose) message("\n========== Step 2: Query target prediction databases ==========")
 
   # Prefer TargetScan 8.0 bulk files (CNN-based model, McGeary et al. 2019)
@@ -943,7 +1252,9 @@ mirna_calculator <- function(targetscan_path = "Data/mirna_data/Summary_Counts.d
     )
   }
 
+  # =========================================================================
   # Step 3: Build consensus
+  # =========================================================================
   if (verbose) message("\n========== Step 3: Build multi-database consensus ==========")
   consensus_df <- build_consensus(
     targetscan_df = ts_df,
@@ -953,11 +1264,50 @@ mirna_calculator <- function(targetscan_path = "Data/mirna_data/Summary_Counts.d
     verbose = verbose
   )
 
-  # Step 4: Compute confidence-weighted gene ranking
-  if (verbose) message("\n========== Step 4: Compute gene rankings ==========")
+  # =========================================================================
+  # Step 4: Weight by miRNA dysregulation magnitude (GEO mode only)
+  # =========================================================================
+  if (use_geo && !is.null(de_mirna_df)) {
+    if (verbose) message("\n========== Step 4: Weight by miRNA dysregulation ==========")
+
+    # Join fold change information to consensus interactions
+    fc_lookup <- de_mirna_df %>%
+      dplyr::select(mirna, abs_log2fc, direction) %>%
+      dplyr::distinct(mirna, .keep_all = TRUE)
+
+    consensus_df <- consensus_df %>%
+      dplyr::left_join(fc_lookup, by = "mirna") %>%
+      dplyr::mutate(
+        # Scale confidence by how strongly the miRNA is dysregulated
+        # Normalize abs_log2fc to [0, 1] range relative to max observed
+        mirna_dysregulation_weight = ifelse(
+          !is.na(abs_log2fc),
+          abs_log2fc / max(abs_log2fc, na.rm = TRUE),
+          0.5  # default for miRNAs without FC data
+        ),
+        # Multiply confidence by dysregulation weight
+        confidence_score = confidence_score * (0.5 + 0.5 * mirna_dysregulation_weight)
+      )
+
+    if (verbose) {
+      message(sprintf("  Interactions with FC weighting: %d", nrow(consensus_df)))
+      message(sprintf("  miRNAs with FC data: %d / %d",
+                      sum(!is.na(consensus_df$abs_log2fc)),
+                      nrow(consensus_df)))
+    }
+  }
+
+  # =========================================================================
+  # Step 5: Compute confidence-weighted gene ranking
+  # =========================================================================
+  step_num <- if (use_geo) 5 else 4
+  if (verbose) message(sprintf("\n========== Step %d: Compute gene rankings ==========",
+                                step_num))
   ranking <- compute_gene_ranking(consensus_df, verbose = verbose)
 
-  # Step 5: Save outputs
+  # =========================================================================
+  # Step 6: Save outputs
+  # =========================================================================
   if (save_outputs) {
     ranking_path <- file.path(output_dir,
                                paste0(output_prefix, "_ranking.csv"))
@@ -980,5 +1330,8 @@ mirna_calculator <- function(targetscan_path = "Data/mirna_data/Summary_Counts.d
   }
 
   attr(ranking, "consensus_details") <- consensus_df
+  if (!is.null(de_mirna_df)) {
+    attr(ranking, "de_mirnas") <- de_mirna_df
+  }
   return(ranking)
 }
