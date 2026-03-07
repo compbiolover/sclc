@@ -27,6 +27,11 @@ suppressMessages({
 #' @param my_alpha Elastic net mixing parameter (1 = lasso, 0 = ridge).
 #' @param max_it Maximum iterations for glmnet (default 100000).
 #' @param gene_num Maximum number of candidate genes to use (default 20).
+#'   For discovery mode, set this high (e.g., 500-2000) to let the lasso
+#'   select from a large pool.
+#' @param lambda_rule Which lambda to use from inner CV: "lambda.1se"
+#'   (default, more conservative/generalizable) or "lambda.min" (best
+#'   in-sample performance but more prone to overfitting).
 #' @param progress_free Logical; if TRUE, use time2 column instead of time.
 #' @param output_dir Directory to save results. Created if it doesn't exist.
 #' @param verbose Logical; print progress messages.
@@ -36,6 +41,8 @@ suppressMessages({
 #'   - per_seed: data frame with per-seed mean outer C-index
 #'   - all_folds: data frame with every outer fold C-index
 #'   - gene_stability: data frame showing how often each gene was selected
+#'     across all outer folds. In discovery mode, genes that appear with
+#'     high frequency (>50%) across folds are strong signature candidates.
 nested_cv <- function(cox_df,
                       candidate_genes,
                       n_outer_folds = 5,
@@ -44,6 +51,7 @@ nested_cv <- function(cox_df,
                       my_alpha = 1,
                       max_it = 100000,
                       gene_num = 20,
+                      lambda_rule = "lambda.1se",
                       progress_free = FALSE,
                       output_dir = "Outputs/nested_cv",
                       verbose = TRUE) {
@@ -53,6 +61,9 @@ nested_cv <- function(cox_df,
   }
   if (is.null(candidate_genes) || length(candidate_genes) == 0) {
     stop("candidate_genes must be a non-empty character vector.")
+  }
+  if (!lambda_rule %in% c("lambda.1se", "lambda.min")) {
+    stop("lambda_rule must be 'lambda.1se' or 'lambda.min'.")
   }
 
   # Ensure output directory exists
@@ -166,7 +177,7 @@ nested_cv <- function(cox_df,
       if (is.null(inner_cv)) next
 
       # Get selected genes from inner CV
-      inner_coefs <- coef(inner_cv, s = "lambda.min")
+      inner_coefs <- coef(inner_cv, s = lambda_rule)
       selected_idx <- which(as.vector(inner_coefs) != 0)
       selected_genes <- rownames(inner_coefs)[selected_idx]
 
@@ -176,7 +187,6 @@ nested_cv <- function(cox_df,
       }
 
       # ----- Evaluate on outer test fold -----
-      # Refit on full training data with lambda.min from inner CV
       test_x <- tryCatch(
         model.matrix(as.formula(formula_str), test_data),
         error = function(e) NULL
@@ -188,9 +198,9 @@ nested_cv <- function(cox_df,
         event = test_data$vital.status
       )
 
-      # Predict risk scores on test data
+      # Predict risk scores on test data using the chosen lambda rule
       test_pred <- tryCatch(
-        as.vector(predict(inner_cv, newx = test_x, s = "lambda.min",
+        as.vector(predict(inner_cv, newx = test_x, s = lambda_rule,
                           type = "link")),
         error = function(e) NULL
       )
@@ -211,7 +221,7 @@ nested_cv <- function(cox_df,
           n_test = nrow(test_data),
           n_selected_genes = length(selected_genes),
           selected_genes = paste(selected_genes, collapse = ","),
-          lambda_min = inner_cv$lambda.min,
+          lambda_selected = inner_cv[[lambda_rule]],
           stringsAsFactors = FALSE
         )
       }
@@ -247,6 +257,7 @@ nested_cv <- function(cox_df,
     n_outer_folds = n_outer_folds,
     n_inner_folds = n_inner_folds,
     alpha = my_alpha,
+    lambda_rule = lambda_rule,
     stringsAsFactors = FALSE
   )
 
@@ -308,73 +319,135 @@ nested_cv <- function(cox_df,
 # Example usage (uncomment and modify paths to run)
 # ===========================================================================
 #
-# source("R/cox_model.R")
-#
 # # Load your data (adjust paths as needed)
 # scl_common <- readRDS("Outputs/scl_common.rds")
 # # Or rebuild scl_common from main.Rmd data loading steps
 #
-# # --- Example 1: SDE genes ---
-# sde_genes <- readRDS("Outputs/sde_genes_new_random_seed.rds")
-# sde_results <- nested_cv(
-#   cox_df = scl_common,
-#   candidate_genes = sde_genes,
-#   n_outer_folds = 5,
-#   n_inner_folds = 10,
-#   master_seeds = 1:50,
-#   my_alpha = 1,
-#   gene_num = 20,
-#   output_dir = "Outputs/nested_cv/sde"
-# )
 #
-# # --- Example 2: Your 4-gene signature (tfrc, fam83f, dlk1, gng13) ---
+# # ============================
+# # VALIDATION MODE
+# # ============================
+# # Test whether an existing gene signature generalizes honestly.
+# # Use alpha = 0 (ridge) since genes are pre-selected — the inner CV
+# # only tunes lambda, not which genes to include.
+#
+# # --- Your 4-gene signature (tfrc, fam83f, dlk1, gng13) ---
 # four_gene_results <- nested_cv(
 #   cox_df = scl_common,
 #   candidate_genes = c("tfrc", "fam83f", "dlk1", "gng13"),
 #   n_outer_folds = 5,
 #   n_inner_folds = 10,
 #   master_seeds = 1:100,
-#   my_alpha = 0,  # ridge, since you have a fixed small gene set
+#   my_alpha = 0,
 #   gene_num = 4,
-#   output_dir = "Outputs/nested_cv/four_gene"
+#   lambda_rule = "lambda.1se",
+#   output_dir = "Outputs/nested_cv/four_gene_validation"
 # )
 #
-# # --- Example 3: MAD genes ---
+#
+# # ============================
+# # DISCOVERY MODE
+# # ============================
+# # Let the lasso discover which genes matter from a large candidate pool.
+# # Use alpha = 1 (lasso) so the inner CV performs gene selection AND
+# # lambda tuning. The gene_stability output tells you which genes the
+# # lasso consistently picks across all outer folds and seeds — those
+# # are your new candidate signature genes.
+#
+# # --- Discovery from SDE genes ---
+# sde_genes <- readRDS("Outputs/sde_genes_new_random_seed.rds")
+# sde_discovery <- nested_cv(
+#   cox_df = scl_common,
+#   candidate_genes = sde_genes,
+#   n_outer_folds = 5,
+#   n_inner_folds = 10,
+#   master_seeds = 1:50,
+#   my_alpha = 1,
+#   gene_num = 500,       # let the lasso see a large pool
+#   lambda_rule = "lambda.1se",
+#   output_dir = "Outputs/nested_cv/sde_discovery"
+# )
+# # Check sde_discovery$gene_stability for consistently selected genes
+#
+# # --- Discovery from MAD genes ---
 # mad_genes <- readRDS("Outputs/mad_genes_new_random_seed.rds")
-# mad_results <- nested_cv(
+# mad_discovery <- nested_cv(
 #   cox_df = scl_common,
 #   candidate_genes = mad_genes,
 #   n_outer_folds = 5,
 #   n_inner_folds = 10,
 #   master_seeds = 1:50,
 #   my_alpha = 1,
-#   gene_num = 20,
-#   output_dir = "Outputs/nested_cv/mad"
+#   gene_num = 500,
+#   lambda_rule = "lambda.1se",
+#   output_dir = "Outputs/nested_cv/mad_discovery"
 # )
 #
-# # --- Example 4: miRNA target genes ---
+# # --- Discovery from miRNA target genes ---
 # mirna_genes <- readRDS("Outputs/mirna/rds/mirna_genes_200_mirnas_5_targets_up_.rds")
-# mirna_results <- nested_cv(
+# mirna_discovery <- nested_cv(
 #   cox_df = scl_common,
 #   candidate_genes = mirna_genes,
 #   n_outer_folds = 5,
 #   n_inner_folds = 10,
 #   master_seeds = 1:50,
 #   my_alpha = 1,
-#   gene_num = 20,
-#   output_dir = "Outputs/nested_cv/mirna"
+#   gene_num = 500,
+#   lambda_rule = "lambda.1se",
+#   output_dir = "Outputs/nested_cv/mirna_discovery"
 # )
 #
-# # --- Compare methods ---
+#
+# # ============================
+# # COMPARE METHODS
+# # ============================
 # comparison <- data.frame(
-#   method = c("SDE", "4-gene", "MAD", "miRNA"),
-#   mean_cindex = c(sde_results$summary$mean_cindex,
-#                   four_gene_results$summary$mean_cindex,
-#                   mad_results$summary$mean_cindex,
-#                   mirna_results$summary$mean_cindex),
-#   sd_cindex = c(sde_results$summary$sd_cindex,
-#                 four_gene_results$summary$sd_cindex,
-#                 mad_results$summary$sd_cindex,
-#                 mirna_results$summary$sd_cindex)
+#   method = c("4-gene (validation)", "SDE (discovery)",
+#              "MAD (discovery)", "miRNA (discovery)"),
+#   mean_cindex = c(four_gene_results$summary$mean_cindex,
+#                   sde_discovery$summary$mean_cindex,
+#                   mad_discovery$summary$mean_cindex,
+#                   mirna_discovery$summary$mean_cindex),
+#   sd_cindex = c(four_gene_results$summary$sd_cindex,
+#                 sde_discovery$summary$sd_cindex,
+#                 mad_discovery$summary$sd_cindex,
+#                 mirna_discovery$summary$sd_cindex)
 # )
 # print(comparison)
+#
+#
+# # ============================
+# # DISCOVERY WORKFLOW
+# # ============================
+# # After running discovery mode:
+# #
+# # 1. Look at gene_stability output:
+# #    print(sde_discovery$gene_stability)
+# #
+# # 2. Genes with selection_frequency > 0.5 are strong candidates.
+# #    These genes were independently selected by the lasso in >50%
+# #    of outer folds across different seeds — meaning they're not
+# #    artifacts of a particular train/test split.
+# #
+# # 3. Take those stable genes and run VALIDATION mode to get their
+# #    honest C-index:
+# #
+# #    stable_genes <- sde_discovery$gene_stability %>%
+# #      filter(selection_frequency > 0.5) %>%
+# #      pull(gene)
+# #
+# #    new_sig_results <- nested_cv(
+# #      cox_df = scl_common,
+# #      candidate_genes = stable_genes,
+# #      my_alpha = 0,
+# #      gene_num = length(stable_genes),
+# #      lambda_rule = "lambda.1se",
+# #      master_seeds = 1:100,
+# #      output_dir = "Outputs/nested_cv/new_signature_validation"
+# #    )
+# #
+# # NOTE: This two-step workflow (discover then validate) still has
+# # some optimism because both steps use the same dataset. The nested
+# # CV C-index from the discovery step is already an honest estimate.
+# # The validation step is mainly to confirm with ridge regression
+# # that those specific genes carry signal on their own.
