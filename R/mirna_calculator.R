@@ -1,199 +1,740 @@
-mirna_calculator <- function(ts_org = "Human",
-                             ts_version = "8.0",
-                             max_mir_targets = 10,
-                             cancer_up = TRUE,
-                             status = "up",
-                             cancer_type1 = "lung cancer",
-                             print_ts_targets = TRUE,
-                             mirna_remove = "hsa-miR-129-1-3p",
-                             max_mirnas = 808,
-                             save_mirna_genes = TRUE,
-                             save_mirna_genes_mat = TRUE,
-                             include_sites_score = FALSE,
-                             save_site_score = FALSE,
-                             mirna_ranking_name_rds = "Outputs/lung_mirnas.rds",
-                             mirna_genes_mat_name_rds = "Outputs/lung_mirna_score_matrix.rds",
-                             mirna_genes_mat_name = "Outputs/lung_mirna_score_matrix.csv",
-                             mirna_ranking_name = "Outputs/lung_mirnas.csv",
-                             mirna_site_score_name = "Outputs/site_scores.csv") {
-  library(furrr)
-  library(future)
-  library(hoardeR)
-  library(retry)
+# Name: mirna_calculator.R
+# Author: Andrew Willems <awillems@vols.utk.edu>
+# Purpose: Multi-database miRNA target gene ranking with confidence weighting.
+#
+# Approach:
+#   1. Filter miRNAs to those dysregulated in the cancer of interest (dbDEMC)
+#      AND confirmed in miRmap
+#   2. Query three target prediction databases:
+#      - TargetScan (context++ scores; Agarwal et al., 2015)
+#      - miRDB (target scores; Wong & Wang, 2015)
+#      - miRTarBase (experimentally validated; Huang et al., 2022)
+#   3. Apply literature-established confidence thresholds:
+#      - TargetScan: weighted context++ score <= -0.2
+#      - miRDB: target score >= 80
+#      - miRTarBase: strong experimental evidence (reporter assay, western blot, qPCR)
+#   4. Require multi-database consensus: interaction must be supported by >= 2
+#      databases, OR have strong experimental validation in miRTarBase alone
+#   5. Weight gene scores by prediction confidence rather than binary counts
+#
+# Required local data files:
+#   - Data/mirna_data/mirmap_mirnas.csv         (miRmap miRNA list)
+#   - Data/mirna_data/dbdemc_2.0_high.txt       (dbDEMC upregulated miRNAs)
+#   - Data/mirna_data/dbdemc_2.0_low.txt        (dbDEMC downregulated miRNAs)
+#   - Data/mirna_data/miRDB_v6.0_prediction_result.txt (miRDB predictions)
+#   - Data/mirna_data/miRTarBase.csv            (miRTarBase validated targets)
+#
+# References:
+#   Agarwal et al. (2015). eLife. doi:10.7554/eLife.05005
+#   Wong & Wang (2015). Nucleic Acids Res. doi:10.1093/nar/gku1104
+#   Huang et al. (2022). Nucleic Acids Res. doi:10.1093/nar/gkab1079
 
-  # Set up the number of cores for parallelization
-  plan(multisession, workers = 11)
 
+# =============================================================================
+# Input validation
+# =============================================================================
 
-
-  # miRNAs from miRmap
-  mirmap_mirnas <- read.csv("Data/mirna_data/mirmap_mirnas.csv", sep = ",")
-
-  # Read and filter cancer data
-  cancer_data <- read.csv(file = if (cancer_up) "Data/mirna_data/dbdemc_2.0_high.txt" else "Data/mirna_data/dbdemc_2.0_low.txt", sep = "\t")
-  if (cancer_up == TRUE && status == "up") {
-    cancer_data <- cancer_data %>%
-      filter(Cancer.Type == cancer_type1) %>%
-      filter(Status == "UP")
-  } else if (cancer_up == TRUE && status == "down") {
-    cancer_data <- cancer_data %>%
-      filter(Cancer.Type == cancer_type1) %>%
-      filter(Status == "DOWN")
+#' Validate mirna_calculator inputs
+#'
+#' @param mirmap_path Path to miRmap miRNAs CSV file.
+#' @param dbdemc_path Path to dbDEMC data file.
+#' @param mirdb_path Path to miRDB predictions file (or NULL to skip).
+#' @param mirtarbase_path Path to miRTarBase CSV file (or NULL to skip).
+#' @param cancer_type Cancer type string for dbDEMC filtering.
+#' @param status Direction of dysregulation ("up" or "down").
+#' @param ts_context_threshold TargetScan context++ score threshold.
+#' @param mirdb_score_threshold miRDB target score threshold.
+#' @param min_databases Minimum number of databases for consensus.
+#'
+#' @return Invisible TRUE if all checks pass; stops with informative error otherwise.
+validate_mirna_inputs <- function(mirmap_path,
+                                  dbdemc_path,
+                                  mirdb_path,
+                                  mirtarbase_path,
+                                  cancer_type,
+                                  status,
+                                  ts_context_threshold,
+                                  mirdb_score_threshold,
+                                  min_databases) {
+  if (!is.character(mirmap_path) || length(mirmap_path) != 1) {
+    stop("mirmap_path must be a single character string.")
+  }
+  if (!file.exists(mirmap_path)) {
+    stop(paste0("miRmap file not found: ", mirmap_path))
   }
 
-  # Extract miRNA names
+  if (!is.character(dbdemc_path) || length(dbdemc_path) != 1) {
+    stop("dbdemc_path must be a single character string.")
+  }
+  if (!file.exists(dbdemc_path)) {
+    stop(paste0("dbDEMC file not found: ", dbdemc_path))
+  }
+
+  if (!is.null(mirdb_path)) {
+    if (!is.character(mirdb_path) || length(mirdb_path) != 1) {
+      stop("mirdb_path must be a single character string or NULL.")
+    }
+    if (!file.exists(mirdb_path)) {
+      stop(paste0("miRDB file not found: ", mirdb_path))
+    }
+  }
+
+  if (!is.null(mirtarbase_path)) {
+    if (!is.character(mirtarbase_path) || length(mirtarbase_path) != 1) {
+      stop("mirtarbase_path must be a single character string or NULL.")
+    }
+    if (!file.exists(mirtarbase_path)) {
+      stop(paste0("miRTarBase file not found: ", mirtarbase_path))
+    }
+  }
+
+  if (!is.character(cancer_type) || length(cancer_type) != 1) {
+    stop("cancer_type must be a single character string.")
+  }
+
+  if (!status %in% c("up", "down")) {
+    stop("status must be 'up' or 'down'.")
+  }
+
+  if (!is.numeric(ts_context_threshold) || length(ts_context_threshold) != 1) {
+    stop("ts_context_threshold must be a single numeric value.")
+  }
+
+  if (!is.numeric(mirdb_score_threshold) || length(mirdb_score_threshold) != 1 ||
+      mirdb_score_threshold < 0 || mirdb_score_threshold > 100) {
+    stop("mirdb_score_threshold must be a single numeric value between 0 and 100.")
+  }
+
+  if (!is.numeric(min_databases) || length(min_databases) != 1 ||
+      min_databases < 1 || min_databases > 3) {
+    stop("min_databases must be 1, 2, or 3.")
+  }
+
+  invisible(TRUE)
+}
+
+
+# =============================================================================
+# miRNA filtering
+# =============================================================================
+
+#' Filter miRNAs to cancer-dysregulated set
+#'
+#' Intersects miRmap miRNAs with dbDEMC cancer-associated miRNAs.
+#'
+#' @param mirmap_path Path to miRmap CSV.
+#' @param dbdemc_path Path to dbDEMC file.
+#' @param cancer_type Cancer type for dbDEMC filtering.
+#' @param status "up" or "down" regulation.
+#' @param mirna_remove Character vector of miRNAs to exclude.
+#' @param max_mirnas Maximum number of miRNAs to retain.
+#' @param verbose Print diagnostic messages.
+#'
+#' @return Character vector of filtered miRNA names.
+filter_cancer_mirnas <- function(mirmap_path,
+                                 dbdemc_path,
+                                 cancer_type,
+                                 status,
+                                 mirna_remove = character(0),
+                                 max_mirnas = 808,
+                                 verbose = TRUE) {
+  mirmap_mirnas <- read.csv(mirmap_path, sep = ",")
+  cancer_data <- read.csv(dbdemc_path, sep = "\t")
+
+  cancer_data <- cancer_data %>%
+    dplyr::filter(Cancer.Type == cancer_type) %>%
+    dplyr::filter(Status == toupper(status))
+
   cancer_mirnas <- unique(cancer_data$miRBase.Update.ID)
   cancer_mirnas <- cancer_mirnas[cancer_mirnas != "unknown"]
 
-  # Common miRNAs
   common_mirnas <- intersect(mirmap_mirnas$mature_name, cancer_mirnas)
   common_mirnas <- common_mirnas[!common_mirnas %in% mirna_remove]
 
-  # Limit number of miRNAs
   if (length(common_mirnas) > max_mirnas) {
     common_mirnas <- common_mirnas[1:max_mirnas]
-  } else if (print_ts_targets) {
-    cat("There are fewer target miRNAs available than your input. Using the largest number of common miRNAs for this submission to TargetScan\n")
-    cat("The number of common miRNAs is:", length(common_mirnas), "\n")
   }
 
-  # TargetScan function with try-catch to help manage no table returned errors
-  mirna_targets <- future_map(common_mirnas, function(m) {
-    result <- NULL
-    tryCatch(
-      {
-        result <- hoardeR::targetScan(
-          mirna = m,
-          species = ts_org,
-          release = ts_version,
-          maxOut = max_mir_targets
-        ) %>%
-          mutate(mirna_name_final = m)
-      },
-      error = function(e) {
-        message(paste0("Error: ", e$message, ". Moving to next miRNA"))
+  if (verbose) {
+    message(sprintf("miRmap miRNAs: %d", nrow(mirmap_mirnas)))
+    message(sprintf("dbDEMC %s-%s miRNAs: %d", cancer_type, status,
+                    length(cancer_mirnas)))
+    message(sprintf("Common miRNAs (after filtering): %d",
+                    length(common_mirnas)))
+  }
+
+  common_mirnas
+}
+
+
+# =============================================================================
+# Database query functions
+# =============================================================================
+
+#' Query TargetScan for miRNA targets with context++ score filtering
+#'
+#' @param mirnas Character vector of miRNA names.
+#' @param ts_org Species ("Human").
+#' @param ts_version TargetScan release version.
+#' @param max_targets Maximum targets per miRNA to retrieve.
+#' @param context_threshold Context++ score threshold (interactions with
+#'   scores <= this value are kept). Default -0.2 per Agarwal et al. (2015).
+#' @param verbose Print progress.
+#'
+#' @return Data frame with columns: mirna, gene, context_score, source.
+query_targetscan <- function(mirnas,
+                             ts_org = "Human",
+                             ts_version = "8.0",
+                             max_targets = 500,
+                             context_threshold = -0.2,
+                             verbose = TRUE) {
+  if (!requireNamespace("hoardeR", quietly = TRUE)) {
+    stop("Package 'hoardeR' is required for TargetScan queries.")
+  }
+  if (!requireNamespace("furrr", quietly = TRUE)) {
+    stop("Package 'furrr' is required for parallel TargetScan queries.")
+  }
+
+  future::plan(future::multisession, workers = min(11, future::availableCores()))
+
+  if (verbose) message(sprintf("Querying TargetScan for %d miRNAs...",
+                                length(mirnas)))
+
+  results <- furrr::future_map(mirnas, function(m) {
+    tryCatch({
+      ts_result <- hoardeR::targetScan(
+        mirna = m,
+        species = ts_org,
+        release = ts_version,
+        maxOut = max_targets
+      )
+
+      if (!"Ortholog" %in% names(ts_result)) return(NULL)
+
+      df <- ts_result %>%
+        dplyr::select(dplyr::any_of(c("Ortholog", "csScore"))) %>%
+        dplyr::rename(gene = Ortholog)
+
+      if ("csScore" %in% names(df)) {
+        df <- df %>%
+          dplyr::mutate(
+            context_score = as.numeric(gsub("[^0-9.\\-]", "", csScore))
+          ) %>%
+          dplyr::select(-csScore) %>%
+          dplyr::filter(!is.na(context_score) & context_score <= context_threshold)
+      } else {
+        df$context_score <- NA_real_
       }
-    )
-    result
+
+      df$mirna <- m
+      df$source <- "targetscan"
+      df
+    }, error = function(e) {
+      if (verbose) message(sprintf("  TargetScan error for %s: %s", m,
+                                    e$message))
+      NULL
+    })
   })
 
-  # Simplify TargetScan results
-  if (include_sites_score) {
-    total_list <- lapply(mirna_targets, function(df) {
-      if ("Ortholog" %in% names(df)) {
-        df <- df %>%
-          select(Ortholog, mirna_name_final, consSites, poorlySites) %>%
-          rename(gene_list = Ortholog, mirna_list = mirna_name_final) %>%
-          mutate(across(c(consSites, poorlySites), ~ as.numeric(gsub("\\*", "", .))), .keep = "unused") %>%
-          mutate(across(c(consSites, poorlySites), ~ replace(., is.na(.), 0))) %>%
-          mutate(site_score = (consSites / (consSites + poorlySites)) + consSites) %>%
-          arrange(desc(site_score))
-        df
-      } else {
-        writeLines("This miRNA is not found in TargetScan. We are continuing on to the next miRNA")
-        NULL
-      }
-    })
+  out <- dplyr::bind_rows(results[!sapply(results, is.null)])
+  if (verbose) message(sprintf("  TargetScan: %d interactions from %d miRNAs",
+                                nrow(out), length(unique(out$mirna))))
+  out
+}
+
+
+#' Load miRDB predictions with score filtering
+#'
+#' @param mirdb_path Path to miRDB prediction file (tab-separated:
+#'   miRNA, gene symbol, target score).
+#' @param mirnas Character vector of miRNAs to filter to.
+#' @param score_threshold Minimum target score (default 80, per Wong & Wang 2015).
+#' @param verbose Print progress.
+#'
+#' @return Data frame with columns: mirna, gene, mirdb_score, source.
+load_mirdb <- function(mirdb_path,
+                       mirnas,
+                       score_threshold = 80,
+                       verbose = TRUE) {
+  if (verbose) message("Loading miRDB predictions...")
+
+  mirdb <- read.delim(mirdb_path, header = FALSE, sep = "\t",
+                       stringsAsFactors = FALSE)
+
+  # miRDB format: V1 = miRNA, V2 = target (gene symbol or RefSeq), V3 = score
+  # Some versions use RefSeq IDs; adjust column names accordingly
+  if (ncol(mirdb) >= 3) {
+    colnames(mirdb)[1:3] <- c("mirna", "gene", "mirdb_score")
   } else {
-    total_list <- lapply(mirna_targets, function(df) {
-      if ("Ortholog" %in% names(df)) {
-        df %>%
-          select(Ortholog, mirna_name_final) %>%
-          rename(gene_list = Ortholog, mirna_list = mirna_name_final)
-      } else {
-        writeLines("This miRNA is not found in TargetScan. We are continuing on to the next miRNA")
-        NULL
-      }
-    })
+    stop("miRDB file must have at least 3 columns (miRNA, gene/target, score).")
   }
 
+  mirdb$mirdb_score <- as.numeric(mirdb$mirdb_score)
+
+  out <- mirdb %>%
+    dplyr::filter(mirna %in% mirnas) %>%
+    dplyr::filter(mirdb_score >= score_threshold) %>%
+    dplyr::mutate(source = "mirdb") %>%
+    dplyr::select(mirna, gene, mirdb_score, source)
+
+  if (verbose) message(sprintf("  miRDB: %d high-confidence interactions (score >= %d)",
+                                nrow(out), score_threshold))
+  out
+}
 
 
-  # Removing any lists in total_list that are NULL (i.e. aren't found in TargetScan)
-  total_list <- total_list[!sapply(total_list, is.null)]
+#' Load miRTarBase experimentally validated interactions
+#'
+#' @param mirtarbase_path Path to miRTarBase CSV file.
+#' @param mirnas Character vector of miRNAs to filter to.
+#' @param strong_only Logical; if TRUE (default), only keep interactions with
+#'   strong experimental evidence (reporter assay, western blot, qPCR).
+#' @param verbose Print progress.
+#'
+#' @return Data frame with columns: mirna, gene, evidence_type, source.
+load_mirtarbase <- function(mirtarbase_path,
+                            mirnas,
+                            strong_only = TRUE,
+                            verbose = TRUE) {
+  if (verbose) message("Loading miRTarBase validated interactions...")
 
-  # Function to sum the site scores across unique miRNA-gene pairs
-  sum_site_scores <- function(lists) {
-    # Create an empty data frame to store the summed site scores
-    result <- data.frame(miRNA = character(), gene = character(), site_score = numeric(), stringsAsFactors = FALSE)
+  mtb <- read.csv(mirtarbase_path, stringsAsFactors = FALSE)
 
-    # Loop through each list in the input
-    for (lst in lists) {
-      # Extract the miRNA, gene, and site score from the list
-      miRNA <- lst$mirna_list
-      gene <- lst$gene_list
-      site_score <- lst$site_score
+  # miRTarBase standard columns (may vary slightly by version)
+  mirna_col <- grep("^miRNA$|^miRTarBase.ID|^miRNA\\.ID", names(mtb),
+                     value = TRUE, ignore.case = TRUE)
+  gene_col <- grep("^Target.Gene$|^Target\\.Gene|^Gene\\.Symbol",
+                    names(mtb), value = TRUE, ignore.case = TRUE)
+  evidence_col <- grep("^Experiments$|^Support\\.Type|^Evidence",
+                        names(mtb), value = TRUE, ignore.case = TRUE)
 
-      # Check if the miRNA-gene pair already exists in the result data frame
-      if (any(result$miRNA == miRNA & result$gene == gene)) {
-        # If the pair exists, update the site score by summing with the existing value
-        result$site_score[result$miRNA == miRNA & result$gene == gene] <- result$site_score[result$miRNA == miRNA & result$gene == gene] + site_score
-      } else {
-        # If the pair doesn't exist, add a new row to the result data frame
-        result <- rbind(result, data.frame(miRNA = miRNA, gene = gene, site_score = site_score, stringsAsFactors = FALSE))
-      }
-    }
-
-    # Return the resulting data frame
-    result <- result[order(result$site_score, decreasing = TRUE), ]
-    result
+  if (length(mirna_col) == 0 || length(gene_col) == 0) {
+    stop(paste0("Cannot identify miRNA/gene columns in miRTarBase file. ",
+                "Found columns: ", paste(names(mtb), collapse = ", ")))
   }
 
-  # Call the function with the input lists
-  summed_site_scores <- sum_site_scores(total_list)
-
-  # Create score matrix
-  all_mirs_for_score <- unique(unlist(sapply(total_list, "[[", "mirna_list")))
-  all_genes_for_score <- unique(unlist(sapply(total_list, "[[", "gene_list")))
-  mirna_score <- matrix(0,
-    nrow = length(all_genes_for_score), ncol = length(all_mirs_for_score),
-    dimnames = list(all_genes_for_score, all_mirs_for_score)
+  mtb_clean <- data.frame(
+    mirna = mtb[[mirna_col[1]]],
+    gene = mtb[[gene_col[1]]],
+    stringsAsFactors = FALSE
   )
 
+  if (length(evidence_col) > 0) {
+    mtb_clean$evidence_type <- mtb[[evidence_col[1]]]
+  } else {
+    mtb_clean$evidence_type <- "unknown"
+  }
 
-  # Calculate scores
-  for (i in seq_along(total_list)) {
-    df <- total_list[[i]]
-    for (j in seq_len(nrow(df))) {
-      gene <- df[j, "gene_list"]
-      mirna <- df[j, "mirna_list"]
-      if (!is.na(gene)) {
-        tryCatch(
-          {
-            mirna_score[gene, mirna] <- mirna_score[gene, mirna] + 1
-          },
-          error = function(e) {
-            message(paste(
-              "Error with gene", gene, "and miRNA", mirna, ":",
-              conditionMessage(e)
-            ))
-          }
-        )
+  strong_methods <- c("Luciferase reporter assay", "Reporter assay",
+                       "Western blot", "qRT-PCR", "Northern blot",
+                       "Proteomics", "In-situ hybridization")
+
+  if (strong_only && "evidence_type" %in% names(mtb_clean)) {
+    mtb_clean <- mtb_clean %>%
+      dplyr::filter(grepl(paste(strong_methods, collapse = "|"),
+                          evidence_type, ignore.case = TRUE))
+  }
+
+  out <- mtb_clean %>%
+    dplyr::filter(mirna %in% mirnas) %>%
+    dplyr::mutate(source = "mirtarbase") %>%
+    dplyr::select(mirna, gene, evidence_type, source) %>%
+    dplyr::distinct(mirna, gene, .keep_all = TRUE)
+
+  if (verbose) {
+    evidence_label <- if (strong_only) "strong-evidence" else "all"
+    message(sprintf("  miRTarBase: %d %s validated interactions",
+                    nrow(out), evidence_label))
+  }
+  out
+}
+
+
+# =============================================================================
+# Multi-database consensus
+# =============================================================================
+
+#' Build consensus miRNA-gene interactions from multiple databases
+#'
+#' @param targetscan_df Data frame from query_targetscan().
+#' @param mirdb_df Data frame from load_mirdb() (or NULL).
+#' @param mirtarbase_df Data frame from load_mirtarbase() (or NULL).
+#' @param min_databases Minimum databases supporting an interaction (default 2).
+#'   Exception: miRTarBase strong-evidence interactions always pass regardless.
+#' @param verbose Print summary.
+#'
+#' @return Data frame with columns: mirna, gene, n_databases, databases,
+#'   confidence_score, has_experimental_validation.
+build_consensus <- function(targetscan_df,
+                            mirdb_df = NULL,
+                            mirtarbase_df = NULL,
+                            min_databases = 2,
+                            verbose = TRUE) {
+  # Standardize all to mirna + gene + source
+  all_interactions <- list()
+
+  if (!is.null(targetscan_df) && nrow(targetscan_df) > 0) {
+    ts_pairs <- targetscan_df %>%
+      dplyr::select(mirna, gene) %>%
+      dplyr::mutate(source = "targetscan") %>%
+      dplyr::distinct()
+    all_interactions[["targetscan"]] <- ts_pairs
+  }
+
+  if (!is.null(mirdb_df) && nrow(mirdb_df) > 0) {
+    mdb_pairs <- mirdb_df %>%
+      dplyr::select(mirna, gene) %>%
+      dplyr::mutate(source = "mirdb") %>%
+      dplyr::distinct()
+    all_interactions[["mirdb"]] <- mdb_pairs
+  }
+
+  if (!is.null(mirtarbase_df) && nrow(mirtarbase_df) > 0) {
+    mtb_pairs <- mirtarbase_df %>%
+      dplyr::select(mirna, gene) %>%
+      dplyr::mutate(source = "mirtarbase") %>%
+      dplyr::distinct()
+    all_interactions[["mirtarbase"]] <- mtb_pairs
+  }
+
+  n_dbs <- length(all_interactions)
+  if (n_dbs == 0) {
+    stop("No interactions found in any database.")
+  }
+  if (n_dbs == 1 && min_databases > 1) {
+    warning(paste0("Only 1 database provided but min_databases = ", min_databases,
+                   ". Setting min_databases = 1."))
+    min_databases <- 1
+  }
+
+  combined <- dplyr::bind_rows(all_interactions)
+
+  # Count databases per mirna-gene pair
+  consensus <- combined %>%
+    dplyr::group_by(mirna, gene) %>%
+    dplyr::summarise(
+      n_databases = dplyr::n_distinct(source),
+      databases = paste(sort(unique(source)), collapse = ","),
+      .groups = "drop"
+    )
+
+  # Check for experimental validation
+  experimentally_validated <- character(0)
+  if (!is.null(mirtarbase_df) && nrow(mirtarbase_df) > 0) {
+    experimentally_validated <- paste(mirtarbase_df$mirna,
+                                      mirtarbase_df$gene, sep = ":")
+  }
+
+  consensus <- consensus %>%
+    dplyr::mutate(
+      has_experimental_validation = paste(mirna, gene, sep = ":") %in%
+        experimentally_validated
+    )
+
+  # Apply consensus filter: >= min_databases OR experimentally validated
+  consensus_filtered <- consensus %>%
+    dplyr::filter(n_databases >= min_databases | has_experimental_validation)
+
+  # Build confidence score: weighted sum of database support
+  # TargetScan context++ score (normalized to 0-1 where lower raw = higher confidence)
+  ts_scores <- NULL
+  if (!is.null(targetscan_df) && nrow(targetscan_df) > 0 &&
+      "context_score" %in% names(targetscan_df)) {
+    ts_scores <- targetscan_df %>%
+      dplyr::select(mirna, gene, context_score) %>%
+      dplyr::group_by(mirna, gene) %>%
+      dplyr::summarise(ts_confidence = mean(abs(context_score), na.rm = TRUE),
+                        .groups = "drop")
+  }
+
+  # miRDB score (normalized to 0-1)
+  mdb_scores <- NULL
+  if (!is.null(mirdb_df) && nrow(mirdb_df) > 0) {
+    mdb_scores <- mirdb_df %>%
+      dplyr::select(mirna, gene, mirdb_score) %>%
+      dplyr::group_by(mirna, gene) %>%
+      dplyr::summarise(mdb_confidence = mean(mirdb_score, na.rm = TRUE) / 100,
+                        .groups = "drop")
+  }
+
+  # Join confidence scores
+  if (!is.null(ts_scores)) {
+    consensus_filtered <- consensus_filtered %>%
+      dplyr::left_join(ts_scores, by = c("mirna", "gene"))
+  } else {
+    consensus_filtered$ts_confidence <- NA_real_
+  }
+
+  if (!is.null(mdb_scores)) {
+    consensus_filtered <- consensus_filtered %>%
+      dplyr::left_join(mdb_scores, by = c("mirna", "gene"))
+  } else {
+    consensus_filtered$mdb_confidence <- NA_real_
+  }
+
+  # Composite confidence: mean of available scores + database count bonus
+  consensus_filtered <- consensus_filtered %>%
+    dplyr::rowwise() %>%
+    dplyr::mutate(
+      confidence_score = {
+        scores <- c(ts_confidence, mdb_confidence)
+        scores <- scores[!is.na(scores)]
+        base <- if (length(scores) > 0) mean(scores) else 0.5
+        db_bonus <- (n_databases - 1) * 0.1
+        exp_bonus <- ifelse(has_experimental_validation, 0.2, 0)
+        min(base + db_bonus + exp_bonus, 1.0)
       }
+    ) %>%
+    dplyr::ungroup()
+
+  if (verbose) {
+    message(sprintf("\n===== Multi-Database Consensus ====="))
+    message(sprintf("Total unique interactions across all databases: %d",
+                    nrow(consensus)))
+    message(sprintf("Passing consensus (>= %d DBs or experimentally validated): %d",
+                    min_databases, nrow(consensus_filtered)))
+    message(sprintf("  Supported by 1 database: %d",
+                    sum(consensus_filtered$n_databases == 1)))
+    message(sprintf("  Supported by 2 databases: %d",
+                    sum(consensus_filtered$n_databases == 2)))
+    if (n_dbs >= 3) {
+      message(sprintf("  Supported by 3 databases: %d",
+                      sum(consensus_filtered$n_databases == 3)))
+    }
+    message(sprintf("  Experimentally validated: %d",
+                    sum(consensus_filtered$has_experimental_validation)))
+    message(sprintf("Unique genes in consensus: %d",
+                    length(unique(consensus_filtered$gene))))
+    message(sprintf("Unique miRNAs in consensus: %d",
+                    length(unique(consensus_filtered$mirna))))
+  }
+
+  consensus_filtered
+}
+
+
+# =============================================================================
+# Gene ranking
+# =============================================================================
+
+#' Compute confidence-weighted miRNA gene rankings
+#'
+#' Instead of counting how many miRNAs target each gene (biased toward
+#' well-studied hub genes), this weights each interaction by its prediction
+#' confidence and normalizes to a probability distribution.
+#'
+#' @param consensus_df Data frame from build_consensus().
+#' @param verbose Print summary.
+#'
+#' @return Named numeric vector of gene scores (sums to 1), sorted descending.
+compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
+  gene_scores <- consensus_df %>%
+    dplyr::group_by(gene) %>%
+    dplyr::summarise(
+      raw_score = sum(confidence_score, na.rm = TRUE),
+      n_mirnas = dplyr::n_distinct(mirna),
+      n_databases_mean = mean(n_databases),
+      has_validation = any(has_experimental_validation),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(raw_score))
+
+  # Normalize to sum to 1
+  total <- sum(gene_scores$raw_score)
+  ranking <- gene_scores$raw_score / total
+  names(ranking) <- gene_scores$gene
+  ranking <- sort(ranking, decreasing = TRUE)
+
+  if (verbose) {
+    message(sprintf("\n===== Gene Ranking Summary ====="))
+    message(sprintf("Total genes ranked: %d", length(ranking)))
+    message(sprintf("Top 10 genes:"))
+    for (i in seq_len(min(10, length(ranking)))) {
+      g <- names(ranking)[i]
+      row <- gene_scores[gene_scores$gene == g, ]
+      message(sprintf("  %2d. %s: score=%.4f, miRNAs=%d, mean_dbs=%.1f, validated=%s",
+                      i, g, ranking[i], row$n_mirnas, row$n_databases_mean,
+                      ifelse(row$has_validation, "yes", "no")))
     }
   }
 
+  ranking
+}
 
 
+# =============================================================================
+# Main function
+# =============================================================================
 
-  # Save score matrix
-  if (save_mirna_genes_mat) {
-    write.csv(mirna_score, file = mirna_genes_mat_name)
-    saveRDS(mirna_score, file = mirna_genes_mat_name_rds)
+#' Multi-database miRNA target gene calculator
+#'
+#' Queries TargetScan, miRDB, and miRTarBase for miRNA-gene interactions,
+#' applies literature-established confidence thresholds, requires multi-database
+#' consensus, and produces confidence-weighted gene rankings.
+#'
+#' @param ts_org TargetScan species (default "Human").
+#' @param ts_version TargetScan release (default "8.0").
+#' @param ts_max_targets Max targets to retrieve per miRNA from TargetScan.
+#' @param ts_context_threshold TargetScan context++ score threshold. Interactions
+#'   with scores <= this value are kept. Default -0.2 per Agarwal et al. (2015).
+#' @param mirdb_path Path to miRDB predictions file, or NULL to skip miRDB.
+#' @param mirdb_score_threshold miRDB minimum target score. Default 80
+#'   per Wong & Wang (2015).
+#' @param mirtarbase_path Path to miRTarBase CSV, or NULL to skip miRTarBase.
+#' @param mirtarbase_strong_only Logical; only use strong experimental evidence.
+#' @param min_databases Minimum databases for consensus (default 2).
+#'   Interactions with strong miRTarBase evidence always pass regardless.
+#' @param cancer_type Cancer type for dbDEMC filtering.
+#' @param status Dysregulation direction ("up" or "down").
+#' @param mirna_remove Character vector of miRNAs to exclude.
+#' @param max_mirnas Maximum miRNAs to use.
+#' @param mirmap_path Path to miRmap miRNAs CSV.
+#' @param dbdemc_path Path to dbDEMC file. If NULL, auto-selects based on
+#'   cancer_up parameter.
+#' @param cancer_up Logical; TRUE for upregulated, FALSE for downregulated.
+#'   Used to select dbDEMC file when dbdemc_path is NULL.
+#' @param save_outputs Logical; save ranking and consensus data to files.
+#' @param output_dir Directory for output files.
+#' @param output_prefix Prefix for output filenames.
+#' @param verbose Print progress messages.
+#'
+#' @return Named numeric vector of gene scores (sums to 1), sorted descending.
+#'   Also invisibly returns a list with the full consensus data frame
+#'   as an attribute "consensus_details".
+mirna_calculator <- function(ts_org = "Human",
+                             ts_version = "8.0",
+                             ts_max_targets = 500,
+                             ts_context_threshold = -0.2,
+                             mirdb_path = "Data/mirna_data/miRDB_v6.0_prediction_result.txt",
+                             mirdb_score_threshold = 80,
+                             mirtarbase_path = "Data/mirna_data/miRTarBase.csv",
+                             mirtarbase_strong_only = TRUE,
+                             min_databases = 2,
+                             cancer_type = "lung cancer",
+                             status = "up",
+                             mirna_remove = "hsa-miR-129-1-3p",
+                             max_mirnas = 808,
+                             mirmap_path = "Data/mirna_data/mirmap_mirnas.csv",
+                             dbdemc_path = NULL,
+                             cancer_up = TRUE,
+                             save_outputs = TRUE,
+                             output_dir = "Outputs/mirna",
+                             output_prefix = "mirna_consensus",
+                             verbose = TRUE) {
+  suppressMessages({
+    library(dplyr)
+  })
+
+  # Auto-select dbDEMC file if not provided
+  if (is.null(dbdemc_path)) {
+    dbdemc_path <- if (cancer_up) {
+      "Data/mirna_data/dbdemc_2.0_high.txt"
+    } else {
+      "Data/mirna_data/dbdemc_2.0_low.txt"
+    }
   }
 
-  # Calculate and save miRNA ranking
-  mirna_ranking <- rowSums(mirna_score) / sum(mirna_score)
-  mirna_ranking <- sort(mirna_ranking, decreasing = TRUE)
+  # Validate inputs
+  validate_mirna_inputs(
+    mirmap_path = mirmap_path,
+    dbdemc_path = dbdemc_path,
+    mirdb_path = mirdb_path,
+    mirtarbase_path = mirtarbase_path,
+    cancer_type = cancer_type,
+    status = status,
+    ts_context_threshold = ts_context_threshold,
+    mirdb_score_threshold = mirdb_score_threshold,
+    min_databases = min_databases
+  )
 
-  if (save_mirna_genes) {
-    write.csv(mirna_ranking, file = mirna_ranking_name)
-    saveRDS(mirna_ranking, file = mirna_ranking_name_rds)
+  if (save_outputs && !dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
   }
 
-  if (save_site_score) {
-    write.csv(summed_site_scores, file = mirna_site_score_name)
+  # Step 1: Filter miRNAs to cancer-associated set
+  if (verbose) message("\n========== Step 1: Filter cancer-associated miRNAs ==========")
+  common_mirnas <- filter_cancer_mirnas(
+    mirmap_path = mirmap_path,
+    dbdemc_path = dbdemc_path,
+    cancer_type = cancer_type,
+    status = status,
+    mirna_remove = mirna_remove,
+    max_mirnas = max_mirnas,
+    verbose = verbose
+  )
+
+  if (length(common_mirnas) == 0) {
+    stop("No miRNAs passed cancer filtering. Check cancer_type and status.")
   }
 
-  return(mirna_ranking)
+  # Step 2: Query databases
+  if (verbose) message("\n========== Step 2: Query target prediction databases ==========")
+
+  ts_df <- query_targetscan(
+    mirnas = common_mirnas,
+    ts_org = ts_org,
+    ts_version = ts_version,
+    max_targets = ts_max_targets,
+    context_threshold = ts_context_threshold,
+    verbose = verbose
+  )
+
+  mirdb_df <- NULL
+  if (!is.null(mirdb_path)) {
+    mirdb_df <- load_mirdb(
+      mirdb_path = mirdb_path,
+      mirnas = common_mirnas,
+      score_threshold = mirdb_score_threshold,
+      verbose = verbose
+    )
+  }
+
+  mirtarbase_df <- NULL
+  if (!is.null(mirtarbase_path)) {
+    mirtarbase_df <- load_mirtarbase(
+      mirtarbase_path = mirtarbase_path,
+      mirnas = common_mirnas,
+      strong_only = mirtarbase_strong_only,
+      verbose = verbose
+    )
+  }
+
+  # Step 3: Build consensus
+  if (verbose) message("\n========== Step 3: Build multi-database consensus ==========")
+  consensus_df <- build_consensus(
+    targetscan_df = ts_df,
+    mirdb_df = mirdb_df,
+    mirtarbase_df = mirtarbase_df,
+    min_databases = min_databases,
+    verbose = verbose
+  )
+
+  # Step 4: Compute confidence-weighted gene ranking
+  if (verbose) message("\n========== Step 4: Compute gene rankings ==========")
+  ranking <- compute_gene_ranking(consensus_df, verbose = verbose)
+
+  # Step 5: Save outputs
+  if (save_outputs) {
+    ranking_path <- file.path(output_dir,
+                               paste0(output_prefix, "_ranking.csv"))
+    ranking_rds <- file.path(output_dir,
+                              paste0(output_prefix, "_ranking.rds"))
+    consensus_path <- file.path(output_dir,
+                                 paste0(output_prefix, "_interactions.csv"))
+
+    write.csv(data.frame(gene = names(ranking), score = unname(ranking)),
+              file = ranking_path, row.names = FALSE)
+    saveRDS(ranking, file = ranking_rds)
+    write.csv(consensus_df, file = consensus_path, row.names = FALSE)
+
+    if (verbose) {
+      message(sprintf("\nOutputs saved to %s:", output_dir))
+      message(sprintf("  Ranking:      %s", basename(ranking_path)))
+      message(sprintf("  Ranking RDS:  %s", basename(ranking_rds)))
+      message(sprintf("  Interactions: %s", basename(consensus_path)))
+    }
+  }
+
+  attr(ranking, "consensus_details") <- consensus_df
+  return(ranking)
 }
