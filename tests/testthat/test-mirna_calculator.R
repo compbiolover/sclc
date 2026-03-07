@@ -451,3 +451,122 @@ test_that("load_mirtarbase deduplicates mirna-gene pairs", {
 
   unlink(mtb_f)
 })
+
+
+# =============================================================================
+# Tests for load_targetscan_bulk
+# =============================================================================
+
+test_that("load_targetscan_bulk loads predictions with context++ score filtering", {
+  # Create temp TargetScan bulk file with context++ scores
+  ts_f <- tempfile(fileext = ".txt")
+  ts_data <- data.frame(
+    `miR Family` = c("hsa-miR-1/206", "hsa-miR-1/206", "hsa-miR-1/206"),
+    `Gene Symbol` = c("TP53", "BRCA1", "MYC"),
+    `Cumulative weighted context++ score` = c(-0.45, -0.10, -0.30),
+    `Species ID` = c(9606, 9606, 9606),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  write.table(ts_data, ts_f, sep = "\t", row.names = FALSE, quote = FALSE)
+
+  # Create miR family mapping file
+  fam_f <- tempfile(fileext = ".txt")
+  fam_data <- data.frame(
+    `miR family` = c("hsa-miR-1/206", "hsa-miR-1/206"),
+    `MiRBase ID` = c("hsa-miR-1-3p", "hsa-miR-206"),
+    `Species ID` = c(9606, 9606),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  write.table(fam_data, fam_f, sep = "\t", row.names = FALSE, quote = FALSE)
+
+  result <- load_targetscan_bulk(
+    targetscan_path = ts_f,
+    ts_family_path = fam_f,
+    mirnas = c("hsa-miR-1-3p"),
+    context_threshold = -0.2,
+    verbose = FALSE
+  )
+
+  # TP53 (-0.45) and MYC (-0.30) pass threshold; BRCA1 (-0.10) does not
+  expect_true("TP53" %in% result$gene)
+  expect_true("MYC" %in% result$gene)
+  expect_false("BRCA1" %in% result$gene)
+  expect_equal(unique(result$source), "targetscan")
+
+  unlink(c(ts_f, fam_f))
+})
+
+test_that("load_targetscan_bulk returns empty data frame when no miRNAs match", {
+  ts_f <- tempfile(fileext = ".txt")
+  ts_data <- data.frame(
+    `miR Family` = c("hsa-miR-99"),
+    `Gene Symbol` = c("TP53"),
+    `Species ID` = c(9606),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  write.table(ts_data, ts_f, sep = "\t", row.names = FALSE, quote = FALSE)
+
+  result <- load_targetscan_bulk(
+    targetscan_path = ts_f,
+    ts_family_path = NULL,
+    mirnas = c("hsa-miR-1"),
+    verbose = FALSE
+  )
+
+  expect_equal(nrow(result), 0)
+
+  unlink(ts_f)
+})
+
+test_that("load_targetscan_bulk works without family mapping (direct miRNA match)", {
+  ts_f <- tempfile(fileext = ".txt")
+  ts_data <- data.frame(
+    `miR Family` = c("hsa-miR-1-3p", "hsa-miR-1-3p"),
+    `Gene Symbol` = c("TP53", "BRCA1"),
+    `Species ID` = c(9606, 9606),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  write.table(ts_data, ts_f, sep = "\t", row.names = FALSE, quote = FALSE)
+
+  result <- load_targetscan_bulk(
+    targetscan_path = ts_f,
+    ts_family_path = NULL,
+    mirnas = c("hsa-miR-1-3p"),
+    verbose = FALSE
+  )
+
+  # No context++ score column -> all predictions kept
+  expect_equal(nrow(result), 2)
+  expect_true(all(c("TP53", "BRCA1") %in% result$gene))
+
+  unlink(ts_f)
+})
+
+test_that("validate_mirna_inputs rejects non-existent targetscan_path", {
+  mirmap_f <- tempfile(fileext = ".csv")
+  dbdemc_f <- tempfile(fileext = ".txt")
+  writeLines("dummy", mirmap_f)
+  writeLines("dummy", dbdemc_f)
+
+  expect_error(
+    validate_mirna_inputs(
+      mirmap_path = mirmap_f,
+      dbdemc_path = dbdemc_f,
+      mirdb_path = NULL,
+      mirtarbase_path = NULL,
+      targetscan_path = "/nonexistent/ts.txt",
+      cancer_type = "lung cancer",
+      status = "up",
+      ts_context_threshold = -0.2,
+      mirdb_score_threshold = 80,
+      min_databases = 2
+    ),
+    "TargetScan bulk file not found"
+  )
+
+  unlink(c(mirmap_f, dbdemc_f))
+})

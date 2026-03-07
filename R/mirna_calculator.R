@@ -6,11 +6,13 @@
 #   1. Filter miRNAs to those dysregulated in the cancer of interest (dbDEMC)
 #      AND confirmed in miRmap
 #   2. Query three target prediction databases:
-#      - TargetScan (context++ scores; Agarwal et al., 2015)
+#      - TargetScan 8.0 (CNN-based biochemical model; McGeary et al., 2019)
+#        Preferred: load bulk download files locally (no web scraping)
+#        Fallback: query via hoardeR if bulk files unavailable
 #      - miRDB (target scores; Wong & Wang, 2015)
 #      - miRTarBase (experimentally validated; Huang et al., 2022)
 #   3. Apply literature-established confidence thresholds:
-#      - TargetScan: weighted context++ score <= -0.2
+#      - TargetScan: cumulative weighted context++ score <= -0.2
 #      - miRDB: target score >= 80
 #      - miRTarBase: strong experimental evidence (reporter assay, western blot, qPCR)
 #   4. Require multi-database consensus: interaction must be supported by >= 2
@@ -24,7 +26,17 @@
 #   - Data/mirna_data/miRDB_v6.0_prediction_result.txt (miRDB predictions)
 #   - Data/mirna_data/miRTarBase.csv            (miRTarBase validated targets)
 #
+# TargetScan 8.0 bulk download (preferred over web scraping):
+#   Download from: https://www.targetscan.org/cgi-bin/targetscan/data_download.vert80.cgi
+#   - Data/mirna_data/Summary_Counts.default_predictions.txt
+#       (default CNN-based predictions per miRNA family-gene pair)
+#   - Data/mirna_data/miR_Family_Info.txt
+#       (maps miRNA family IDs to individual mature miRNA names)
+#   - Data/mirna_data/Predicted_Targets_Context_Scores.default_predictions.txt
+#       (optional: per-site context++ scores for additional confidence weighting)
+#
 # References:
+#   McGeary et al. (2019). Science. doi:10.1126/science.aav1741
 #   Agarwal et al. (2015). eLife. doi:10.7554/eLife.05005
 #   Wong & Wang (2015). Nucleic Acids Res. doi:10.1093/nar/gku1104
 #   Huang et al. (2022). Nucleic Acids Res. doi:10.1093/nar/gkab1079
@@ -40,6 +52,9 @@
 #' @param dbdemc_path Path to dbDEMC data file.
 #' @param mirdb_path Path to miRDB predictions file (or NULL to skip).
 #' @param mirtarbase_path Path to miRTarBase CSV file (or NULL to skip).
+#' @param targetscan_path Path to TargetScan 8.0 bulk predictions file (or NULL
+#'   to fall back to hoardeR web queries).
+#' @param ts_family_path Path to TargetScan miR_Family_Info.txt file (or NULL).
 #' @param cancer_type Cancer type string for dbDEMC filtering.
 #' @param status Direction of dysregulation ("up" or "down").
 #' @param ts_context_threshold TargetScan context++ score threshold.
@@ -51,6 +66,8 @@ validate_mirna_inputs <- function(mirmap_path,
                                   dbdemc_path,
                                   mirdb_path,
                                   mirtarbase_path,
+                                  targetscan_path = NULL,
+                                  ts_family_path = NULL,
                                   cancer_type,
                                   status,
                                   ts_context_threshold,
@@ -85,6 +102,24 @@ validate_mirna_inputs <- function(mirmap_path,
     }
     if (!file.exists(mirtarbase_path)) {
       stop(paste0("miRTarBase file not found: ", mirtarbase_path))
+    }
+  }
+
+  if (!is.null(targetscan_path)) {
+    if (!is.character(targetscan_path) || length(targetscan_path) != 1) {
+      stop("targetscan_path must be a single character string or NULL.")
+    }
+    if (!file.exists(targetscan_path)) {
+      stop(paste0("TargetScan bulk file not found: ", targetscan_path))
+    }
+  }
+
+  if (!is.null(ts_family_path)) {
+    if (!is.character(ts_family_path) || length(ts_family_path) != 1) {
+      stop("ts_family_path must be a single character string or NULL.")
+    }
+    if (!file.exists(ts_family_path)) {
+      stop(paste0("TargetScan miR family file not found: ", ts_family_path))
     }
   }
 
@@ -171,7 +206,182 @@ filter_cancer_mirnas <- function(mirmap_path,
 # Database query functions
 # =============================================================================
 
-#' Query TargetScan for miRNA targets with context++ score filtering
+#' Load TargetScan 8.0 predictions from bulk download files
+#'
+#' This is the preferred method for accessing TargetScan data. It uses locally
+#' downloaded prediction files from TargetScan 8.0, which include CNN-based
+#' biochemical model scores (McGeary et al., 2019) that outperform the older
+#' context++ scores by ~50%.
+#'
+#' Download files from:
+#'   https://www.targetscan.org/cgi-bin/targetscan/data_download.vert80.cgi
+#'
+#' @param targetscan_path Path to TargetScan predictions file. This can be:
+#'   - Summary_Counts.default_predictions.txt (CNN-based, recommended)
+#'   - Predicted_Targets_Context_Scores.default_predictions.txt (context++)
+#'   The file should be tab-delimited with columns including miRNA family/ID,
+#'   gene symbol/ID, and a score column.
+#' @param ts_family_path Path to miR_Family_Info.txt (maps miRNA family to
+#'   individual mature miRNA IDs). If NULL, will attempt to match miRNAs by
+#'   family name, which may reduce matches.
+#' @param mirnas Character vector of miRNA names to filter to.
+#' @param context_threshold Context++ score threshold for filtering. Interactions
+#'   with cumulative weighted context++ scores <= this value are kept.
+#'   Default -0.2 per Agarwal et al. (2015). Only applied when the file contains
+#'   context++ scores; CNN-ranked files use their own ranking and all predictions
+#'   from the file are kept.
+#' @param species_id Taxonomy ID for species filtering (default 9606 for human).
+#' @param verbose Print progress.
+#'
+#' @return Data frame with columns: mirna, gene, context_score, source.
+load_targetscan_bulk <- function(targetscan_path,
+                                 ts_family_path = NULL,
+                                 mirnas,
+                                 context_threshold = -0.2,
+                                 species_id = 9606,
+                                 verbose = TRUE) {
+  if (verbose) message("Loading TargetScan 8.0 bulk predictions...")
+
+  ts_data <- read.delim(targetscan_path, header = TRUE, sep = "\t",
+                         stringsAsFactors = FALSE, comment.char = "")
+
+  # Identify columns flexibly across different TargetScan file formats
+  col_names <- colnames(ts_data)
+
+  # Gene column: "Gene Symbol", "Target gene", or "Gene.Symbol"
+  gene_col <- grep("^Gene\\.?Symbol$|^Target\\.?gene$|^Gene\\.?ID$",
+                    col_names, value = TRUE, ignore.case = TRUE)
+  if (length(gene_col) == 0) {
+    # Try positional fallback for Summary_Counts format
+    if (ncol(ts_data) >= 2) {
+      gene_col <- col_names[2]
+      if (verbose) message(sprintf("  Using column '%s' as gene identifier", gene_col))
+    } else {
+      stop("Cannot identify gene column in TargetScan file.")
+    }
+  } else {
+    gene_col <- gene_col[1]
+  }
+
+  # miRNA family column
+  mirna_fam_col <- grep("^miR\\.?[Ff]amily$|^MiRNA\\.?family$|^miRNA$",
+                         col_names, value = TRUE, ignore.case = TRUE)
+  if (length(mirna_fam_col) == 0) {
+    mirna_fam_col <- col_names[1]
+    if (verbose) message(sprintf("  Using column '%s' as miRNA family", mirna_fam_col))
+  } else {
+    mirna_fam_col <- mirna_fam_col[1]
+  }
+
+  # Context++ score column (may not exist in CNN-ranked files)
+  score_col <- grep("context\\+\\+|weighted\\.context|Cumulative\\.weighted",
+                     col_names, value = TRUE, ignore.case = TRUE)
+
+  # Species ID column for filtering
+  species_col <- grep("^Species\\.?ID$|^Taxon", col_names, value = TRUE,
+                       ignore.case = TRUE)
+  if (length(species_col) > 0) {
+    ts_data <- ts_data[ts_data[[species_col[1]]] == species_id, ]
+  }
+
+  # Build miRNA family -> mature miRNA name mapping
+  family_to_mirna <- NULL
+  if (!is.null(ts_family_path)) {
+    fam_info <- read.delim(ts_family_path, header = TRUE, sep = "\t",
+                            stringsAsFactors = FALSE, comment.char = "")
+
+    fam_mirna_col <- grep("^MiRBase\\.?ID$|^miRBase\\.?ID$|^Mature\\.?ID",
+                           colnames(fam_info), value = TRUE, ignore.case = TRUE)
+    fam_family_col <- grep("^miR\\.?[Ff]amily$|^MiRNA\\.?family",
+                            colnames(fam_info), value = TRUE, ignore.case = TRUE)
+    fam_species_col <- grep("^Species\\.?ID$|^Taxon",
+                             colnames(fam_info), value = TRUE, ignore.case = TRUE)
+
+    if (length(fam_mirna_col) > 0 && length(fam_family_col) > 0) {
+      fam_subset <- fam_info
+      if (length(fam_species_col) > 0) {
+        fam_subset <- fam_subset[fam_subset[[fam_species_col[1]]] == species_id, ]
+      }
+      family_to_mirna <- data.frame(
+        family = fam_subset[[fam_family_col[1]]],
+        mirna = fam_subset[[fam_mirna_col[1]]],
+        stringsAsFactors = FALSE
+      )
+      # Filter to requested miRNAs
+      family_to_mirna <- family_to_mirna[family_to_mirna$mirna %in% mirnas, ]
+    }
+  }
+
+  # Map families to individual miRNAs
+  if (!is.null(family_to_mirna) && nrow(family_to_mirna) > 0) {
+    # Join: expand each family row to its member miRNAs
+    relevant_families <- unique(family_to_mirna$family)
+    ts_data <- ts_data[ts_data[[mirna_fam_col]] %in% relevant_families, ]
+
+    # Expand to individual miRNAs
+    ts_expanded <- merge(
+      ts_data,
+      family_to_mirna,
+      by.x = mirna_fam_col,
+      by.y = "family",
+      allow.cartesian = TRUE
+    )
+    mirna_col_name <- "mirna"
+  } else {
+    # No family mapping: try direct miRNA name matching
+    ts_data <- ts_data[ts_data[[mirna_fam_col]] %in% mirnas, ]
+    ts_expanded <- ts_data
+    ts_expanded$mirna <- ts_expanded[[mirna_fam_col]]
+    mirna_col_name <- "mirna"
+  }
+
+  if (nrow(ts_expanded) == 0) {
+    if (verbose) message("  TargetScan bulk: 0 interactions matched your miRNAs")
+    return(data.frame(mirna = character(), gene = character(),
+                      context_score = numeric(), source = character(),
+                      stringsAsFactors = FALSE))
+  }
+
+  # Build output
+  result <- data.frame(
+    mirna = ts_expanded[[mirna_col_name]],
+    gene = ts_expanded[[gene_col]],
+    stringsAsFactors = FALSE
+  )
+
+  # Add context++ score if available and apply threshold
+  if (length(score_col) > 0) {
+    result$context_score <- as.numeric(ts_expanded[[score_col[1]]])
+    result <- result[!is.na(result$context_score) &
+                       result$context_score <= context_threshold, ]
+  } else {
+    result$context_score <- NA_real_
+  }
+
+  result$source <- "targetscan"
+  result <- unique(result)
+
+  if (verbose) {
+    message(sprintf("  TargetScan bulk: %d interactions from %d miRNAs",
+                    nrow(result), length(unique(result$mirna))))
+    if (length(score_col) > 0) {
+      message(sprintf("  Score column used: %s (threshold <= %.2f)",
+                      score_col[1], context_threshold))
+    } else {
+      message("  No context++ score column found; using CNN-ranked predictions as-is")
+    }
+  }
+
+  result
+}
+
+
+#' Query TargetScan for miRNA targets with context++ score filtering (web API)
+#'
+#' Fallback method that queries TargetScan via the hoardeR package's web
+#' scraping interface. Prefer load_targetscan_bulk() with locally downloaded
+#' TargetScan 8.0 files for better performance and access to CNN-based scores
+#' (McGeary et al., 2019).
 #'
 #' @param mirnas Character vector of miRNA names.
 #' @param ts_org Species ("Human").
@@ -572,9 +782,25 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 #' applies literature-established confidence thresholds, requires multi-database
 #' consensus, and produces confidence-weighted gene rankings.
 #'
-#' @param ts_org TargetScan species (default "Human").
-#' @param ts_version TargetScan release (default "8.0").
+#' For TargetScan, the preferred approach is to download the TargetScan 8.0
+#' bulk prediction files locally. These include CNN-based biochemical model
+#' scores (McGeary et al., 2019, Science) that outperform the older context++
+#' scores (Agarwal et al., 2015) by ~50%. If bulk files are provided via
+#' targetscan_path, they are used instead of web scraping via hoardeR.
+#'
+#' @param targetscan_path Path to TargetScan 8.0 bulk predictions file, or NULL
+#'   to fall back to hoardeR web queries. Download from:
+#'   https://www.targetscan.org/cgi-bin/targetscan/data_download.vert80.cgi
+#'   Recommended file: Summary_Counts.default_predictions.txt (CNN-based).
+#' @param ts_family_path Path to TargetScan miR_Family_Info.txt for mapping
+#'   miRNA families to individual mature miRNA names. Only needed when using
+#'   targetscan_path. Download from the same page.
+#' @param ts_org TargetScan species (default "Human"). Only used when falling
+#'   back to hoardeR web queries.
+#' @param ts_version TargetScan release (default "8.0"). Only used when falling
+#'   back to hoardeR web queries.
 #' @param ts_max_targets Max targets to retrieve per miRNA from TargetScan.
+#'   Only used when falling back to hoardeR web queries.
 #' @param ts_context_threshold TargetScan context++ score threshold. Interactions
 #'   with scores <= this value are kept. Default -0.2 per Agarwal et al. (2015).
 #' @param mirdb_path Path to miRDB predictions file, or NULL to skip miRDB.
@@ -601,7 +827,9 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 #' @return Named numeric vector of gene scores (sums to 1), sorted descending.
 #'   Also invisibly returns a list with the full consensus data frame
 #'   as an attribute "consensus_details".
-mirna_calculator <- function(ts_org = "Human",
+mirna_calculator <- function(targetscan_path = "Data/mirna_data/Summary_Counts.default_predictions.txt",
+                             ts_family_path = "Data/mirna_data/miR_Family_Info.txt",
+                             ts_org = "Human",
                              ts_version = "8.0",
                              ts_max_targets = 500,
                              ts_context_threshold = -0.2,
@@ -640,6 +868,8 @@ mirna_calculator <- function(ts_org = "Human",
     dbdemc_path = dbdemc_path,
     mirdb_path = mirdb_path,
     mirtarbase_path = mirtarbase_path,
+    targetscan_path = targetscan_path,
+    ts_family_path = ts_family_path,
     cancer_type = cancer_type,
     status = status,
     ts_context_threshold = ts_context_threshold,
@@ -670,14 +900,28 @@ mirna_calculator <- function(ts_org = "Human",
   # Step 2: Query databases
   if (verbose) message("\n========== Step 2: Query target prediction databases ==========")
 
-  ts_df <- query_targetscan(
-    mirnas = common_mirnas,
-    ts_org = ts_org,
-    ts_version = ts_version,
-    max_targets = ts_max_targets,
-    context_threshold = ts_context_threshold,
-    verbose = verbose
-  )
+  # Prefer TargetScan 8.0 bulk files (CNN-based model, McGeary et al. 2019)
+  # Fall back to hoardeR web queries if bulk files not available
+  if (!is.null(targetscan_path)) {
+    if (verbose) message("Using TargetScan 8.0 bulk predictions (CNN-based model)")
+    ts_df <- load_targetscan_bulk(
+      targetscan_path = targetscan_path,
+      ts_family_path = ts_family_path,
+      mirnas = common_mirnas,
+      context_threshold = ts_context_threshold,
+      verbose = verbose
+    )
+  } else {
+    if (verbose) message("No bulk TargetScan file provided; falling back to hoardeR web queries")
+    ts_df <- query_targetscan(
+      mirnas = common_mirnas,
+      ts_org = ts_org,
+      ts_version = ts_version,
+      max_targets = ts_max_targets,
+      context_threshold = ts_context_threshold,
+      verbose = verbose
+    )
+  }
 
   mirdb_df <- NULL
   if (!is.null(mirdb_path)) {
