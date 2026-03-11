@@ -1,0 +1,11 @@
+# Large database files (download separately; see R/download_mirna_data.R)
+Data/mirna_data/*.txt
+Data/mirna_data/*.csv
+
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Output files
+Outputs/
