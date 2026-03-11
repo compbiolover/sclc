@@ -22,9 +22,9 @@
 #   From miRmap (https://mirmap.ezlab.org/):
 #     - mirmap_mirnas.csv
 #
-#   From dbDEMC 2.0 (https://www.biosino.org/dbDEMC/):
-#     - dbdemc_2.0_high.txt  (upregulated miRNAs)
-#     - dbdemc_2.0_low.txt   (downregulated miRNAs)
+#   From dbDEMC 3.0 (https://www.biosino.org/dbDEMC/):
+#     - dbdemc_3.0_high.txt  (upregulated miRNAs)
+#     - dbdemc_3.0_low.txt   (downregulated miRNAs)
 #
 # Note: GEO data (GSE19945) is downloaded automatically at runtime by
 #       mirna_calculator() via GEOquery — no manual setup needed for that.
@@ -168,23 +168,25 @@ download_mirna_data <- function(which = "all",
   }
 
   # ---------------------------------------------------------------------------
-  # dbDEMC 2.0 — requires manual download
+  # dbDEMC 3.0 — requires manual download
   # ---------------------------------------------------------------------------
   if ("dbdemc" %in% targets) {
-    if (verbose) message("\n=== dbDEMC 2.0 (only needed if use_geo = FALSE) ===")
+    if (verbose) message("\n=== dbDEMC 3.0 (only needed if use_geo = FALSE) ===")
 
-    high_path <- file.path(data_dir, "dbdemc_2.0_high.txt")
-    low_path <- file.path(data_dir, "dbdemc_2.0_low.txt")
+    high_path <- file.path(data_dir, "dbdemc_3.0_high.txt")
+    low_path <- file.path(data_dir, "dbdemc_3.0_low.txt")
 
     if (file.exists(high_path) && file.exists(low_path) && !overwrite) {
       if (verbose) message("  Already exists: dbdemc files")
     } else {
-      message("  dbDEMC requires manual download:")
+      message("  dbDEMC 3.0 requires manual download:")
       message("  1. Go to: https://www.biosino.org/dbDEMC/")
       message("  2. Search for 'lung cancer'")
       message("  3. Download upregulated miRNAs -> save as: ", high_path)
       message("  4. Download downregulated miRNAs -> save as: ", low_path)
-      message("  Note: These are only needed for the legacy approach (use_geo = FALSE).")
+      message("  Note: dbDEMC 3.0 has 2x more data entries than 2.0 (3,268 unique DEMs")
+      message("  across 40 cancer types) and may include fold change/Q-value columns.")
+      message("  These files are only needed for the legacy approach (use_geo = FALSE).")
       message("  The GEO-based approach (default) does not require these files.")
     }
   }
@@ -203,8 +205,8 @@ download_mirna_data <- function(which = "all",
     )
     optional <- c(
       "Predicted_Targets_Context_Scores.default_predictions.txt",
-      "dbdemc_2.0_high.txt",
-      "dbdemc_2.0_low.txt"
+      "dbdemc_3.0_high.txt",
+      "dbdemc_3.0_low.txt"
     )
 
     message("Required files:")
