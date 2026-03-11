@@ -26,8 +26,8 @@ suppressMessages({
 # forked processes work cleanly.
 
 .run_one_seed <- function(seed, cox_df, candidate_genes, time_col,
-                          n_outer_folds, n_inner_folds, my_alpha,
-                          max_it, lambda_rule, eval_times) {
+                          n_outer_folds, n_inner_folds, n_inner_repeats,
+                          my_alpha, max_it, lambda_rule, eval_times) {
   set.seed(seed)
 
   n <- nrow(cox_df)
@@ -74,30 +74,78 @@ suppressMessages({
       event = train_data$vital.status
     )
 
-    # Stratified inner folds
-    inner_folds <- integer(nrow(train_data))
+    # Repeated inner CV: run n_inner_repeats times with different
+    # stratified fold splits, then average the CV error curves to get
+    # a more stable lambda estimate. This reduces noise in lambda
+    # selection without biasing the outer fold evaluation.
     train_deceased <- which(train_data$vital.status == 1)
     train_alive <- which(train_data$vital.status == 0)
-    inner_folds[train_deceased] <- sample(rep(1:n_inner_folds,
-                                               length.out = length(train_deceased)))
-    inner_folds[train_alive] <- sample(rep(1:n_inner_folds,
-                                            length.out = length(train_alive)))
 
-    # Inner CV — parallel = FALSE because we parallelize at seed level
-    inner_cv <- tryCatch(
-      cv.glmnet(
-        x = train_x, y = train_y,
-        nfolds = n_inner_folds,
-        type.measure = "C",
-        maxit = max_it,
-        family = "cox",
-        parallel = FALSE,
-        alpha = my_alpha,
-        foldid = inner_folds
-      ),
-      error = function(e) NULL
-    )
-    if (is.null(inner_cv)) next
+    inner_cv_fits <- list()
+    for (rep_i in seq_len(n_inner_repeats)) {
+      inner_folds <- integer(nrow(train_data))
+      inner_folds[train_deceased] <- sample(rep(1:n_inner_folds,
+                                                 length.out = length(train_deceased)))
+      inner_folds[train_alive] <- sample(rep(1:n_inner_folds,
+                                              length.out = length(train_alive)))
+
+      fit <- tryCatch(
+        cv.glmnet(
+          x = train_x, y = train_y,
+          nfolds = n_inner_folds,
+          type.measure = "C",
+          maxit = max_it,
+          family = "cox",
+          parallel = FALSE,
+          alpha = my_alpha,
+          foldid = inner_folds
+        ),
+        error = function(e) NULL
+      )
+      if (!is.null(fit)) inner_cv_fits[[length(inner_cv_fits) + 1]] <- fit
+    }
+    if (length(inner_cv_fits) == 0) next
+
+    # Pick the best fit: average the CV error at each lambda across repeats,
+    # then select the fit whose chosen lambda is closest to the averaged optimum.
+    # For a single repeat, this just uses that fit directly.
+    if (length(inner_cv_fits) == 1) {
+      inner_cv <- inner_cv_fits[[1]]
+    } else {
+      # Find the common lambda grid (use the first fit's grid as reference)
+      ref_lambdas <- inner_cv_fits[[1]]$lambda
+
+      # Average the CV mean error (cvm) across repeats at each lambda
+      cvm_matrix <- sapply(inner_cv_fits, function(fit) {
+        # Interpolate each fit's cvm onto the reference lambda grid
+        approx(x = log(fit$lambda), y = fit$cvm,
+               xout = log(ref_lambdas), rule = 2)$y
+      })
+      avg_cvm <- rowMeans(cvm_matrix)
+
+      # For type.measure = "C" (concordance), higher is better
+      # cv.glmnet minimizes the loss, but for C-index it stores concordance
+      # directly, so the best lambda maximizes avg_cvm
+      best_idx <- which.max(avg_cvm)
+      best_lambda <- ref_lambdas[best_idx]
+
+      # Also compute the 1-SE rule on the averaged curve
+      avg_cvsd <- if (ncol(cvm_matrix) > 1) {
+        apply(cvm_matrix, 1, sd) / sqrt(ncol(cvm_matrix))
+      } else {
+        inner_cv_fits[[1]]$cvsd
+      }
+      best_cvm <- avg_cvm[best_idx]
+      threshold_1se <- best_cvm - avg_cvsd[best_idx]
+      # lambda.1se: largest lambda within 1 SE of the best
+      candidates_1se <- which(avg_cvm >= threshold_1se)
+      lambda_1se <- max(ref_lambdas[candidates_1se])
+
+      # Use the first fit object but override its lambda selections
+      inner_cv <- inner_cv_fits[[1]]
+      inner_cv$lambda.min <- best_lambda
+      inner_cv$lambda.1se <- lambda_1se
+    }
 
     # Selected genes
     inner_coefs <- coef(inner_cv, s = lambda_rule)
@@ -204,6 +252,10 @@ suppressMessages({
 #' @param lambda_rule Which lambda to use from inner CV: "lambda.1se"
 #'   (default, more conservative/generalizable) or "lambda.min" (best
 #'   in-sample performance but more prone to overfitting).
+#' @param n_inner_repeats Number of times to repeat the inner CV with
+#'   different stratified fold splits (default 3). The CV error curves
+#'   are averaged across repeats to produce a more stable lambda estimate.
+#'   Only touches training data, so does not bias the outer fold evaluation.
 #' @param eval_times Numeric vector of time points (in the same units as
 #'   the time column) at which to compute time-dependent AUC. Requires
 #'   the timeROC package. Default: c(12, 24, 36) for 1/2/3-year AUC.
@@ -230,6 +282,7 @@ nested_cv <- function(cox_df,
                       max_it = 100000,
                       gene_num = 20,
                       lambda_rule = "lambda.1se",
+                      n_inner_repeats = 3,
                       eval_times = c(12, 24, 36),
                       progress_free = FALSE,
                       n_cores = NULL,
@@ -317,6 +370,8 @@ nested_cv <- function(cox_df,
                     length(master_seeds), n_outer_folds, n_cores))
     message(sprintf("  alpha = %s, lambda_rule = %s, %d candidate genes",
                     my_alpha, lambda_rule, length(candidate_genes)))
+    message(sprintf("  Inner CV: %d folds x %d repeats (averaged for stable lambda)",
+                    n_inner_folds, n_inner_repeats))
     if (length(eval_times) > 0) {
       message(sprintf("  Time-dependent AUC at: %s",
                       paste(eval_times, collapse = ", ")))
@@ -334,6 +389,7 @@ nested_cv <- function(cox_df,
         time_col = time_col,
         n_outer_folds = n_outer_folds,
         n_inner_folds = n_inner_folds,
+        n_inner_repeats = n_inner_repeats,
         my_alpha = my_alpha,
         max_it = max_it,
         lambda_rule = lambda_rule,
