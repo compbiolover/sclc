@@ -7,7 +7,8 @@
 #      - PREFERRED: GEO differential expression (e.g., GSE19945 for SCLC)
 #        with limma, using both up- and down-regulated miRNAs, weighted by
 #        fold change magnitude
-#      - FALLBACK: dbDEMC + miRmap intersection (generic "lung cancer")
+#      - FALLBACK: dbDEMC 3.0 + miRmap intersection (generic "lung cancer",
+#        both up- and down-regulated)
 #   2. Query three target prediction databases:
 #      - TargetScan 8.0 (CNN-based biochemical model; McGeary et al., 2019)
 #        Preferred: load bulk download files locally (no web scraping)
@@ -52,27 +53,27 @@
 #' Validate mirna_calculator inputs
 #'
 #' @param mirmap_path Path to miRmap miRNAs CSV file.
-#' @param dbdemc_path Path to dbDEMC data file.
+#' @param dbdemc_high_path Path to dbDEMC upregulated miRNAs file.
+#' @param dbdemc_low_path Path to dbDEMC downregulated miRNAs file (or NULL).
 #' @param mirdb_path Path to miRDB predictions file (or NULL to skip).
 #' @param mirtarbase_path Path to miRTarBase CSV file (or NULL to skip).
 #' @param targetscan_path Path to TargetScan 8.0 bulk predictions file (or NULL
 #'   to fall back to hoardeR web queries).
 #' @param ts_family_path Path to TargetScan miR_Family_Info.txt file (or NULL).
 #' @param cancer_type Cancer type string for dbDEMC filtering.
-#' @param status Direction of dysregulation ("up" or "down").
 #' @param ts_context_threshold TargetScan context++ score threshold.
 #' @param mirdb_score_threshold miRDB target score threshold.
 #' @param min_databases Minimum number of databases for consensus.
 #'
 #' @return Invisible TRUE if all checks pass; stops with informative error otherwise.
 validate_mirna_inputs <- function(mirmap_path,
-                                  dbdemc_path,
+                                  dbdemc_high_path,
+                                  dbdemc_low_path = NULL,
                                   mirdb_path,
                                   mirtarbase_path,
                                   targetscan_path = NULL,
                                   ts_family_path = NULL,
                                   cancer_type,
-                                  status,
                                   ts_context_threshold,
                                   mirdb_score_threshold,
                                   min_databases) {
@@ -83,11 +84,20 @@ validate_mirna_inputs <- function(mirmap_path,
     stop(paste0("miRmap file not found: ", mirmap_path))
   }
 
-  if (!is.character(dbdemc_path) || length(dbdemc_path) != 1) {
-    stop("dbdemc_path must be a single character string.")
+  if (!is.character(dbdemc_high_path) || length(dbdemc_high_path) != 1) {
+    stop("dbdemc_high_path must be a single character string.")
   }
-  if (!file.exists(dbdemc_path)) {
-    stop(paste0("dbDEMC file not found: ", dbdemc_path))
+  if (!file.exists(dbdemc_high_path)) {
+    stop(paste0("dbDEMC upregulated file not found: ", dbdemc_high_path))
+  }
+
+  if (!is.null(dbdemc_low_path)) {
+    if (!is.character(dbdemc_low_path) || length(dbdemc_low_path) != 1) {
+      stop("dbdemc_low_path must be a single character string or NULL.")
+    }
+    if (!file.exists(dbdemc_low_path)) {
+      stop(paste0("dbDEMC downregulated file not found: ", dbdemc_low_path))
+    }
   }
 
   if (!is.null(mirdb_path)) {
@@ -128,10 +138,6 @@ validate_mirna_inputs <- function(mirmap_path,
 
   if (!is.character(cancer_type) || length(cancer_type) != 1) {
     stop("cancer_type must be a single character string.")
-  }
-
-  if (!status %in% c("up", "down")) {
-    stop("status must be 'up' or 'down'.")
   }
 
   if (!is.numeric(ts_context_threshold) || length(ts_context_threshold) != 1) {
@@ -392,109 +398,153 @@ filter_mirnas_from_geo <- function(geo_accession = "GSE19945",
 #' additional columns (fold change, Q-value) which are used to prioritize
 #' miRNAs when present, rather than treating all entries as a flat binary list.
 #'
+#' Integrates both up- and down-regulated miRNAs simultaneously by loading
+#' both files when provided. Returns a data frame with direction information
+#' (mirroring the GEO-based path's output structure).
+#'
 #' Limitations of this approach:
 #' - dbDEMC groups all lung cancers together (NSCLC + SCLC)
-#' - Only uses one direction (up OR down) at a time
 #'
 #' @param mirmap_path Path to miRmap CSV.
-#' @param dbdemc_path Path to dbDEMC file (supports 2.0 and 3.0 formats).
+#' @param dbdemc_high_path Path to dbDEMC file for upregulated miRNAs.
+#' @param dbdemc_low_path Path to dbDEMC file for downregulated miRNAs.
+#'   If NULL, only upregulated miRNAs are used.
 #' @param cancer_type Cancer type for dbDEMC filtering.
-#' @param status "up" or "down" regulation.
 #' @param mirna_remove Character vector of miRNAs to exclude.
 #' @param max_mirnas Maximum number of miRNAs to retain.
 #' @param verbose Print diagnostic messages.
 #'
-#' @return Character vector of filtered miRNA names. When dbDEMC 3.0
-#'   fold change data is available, miRNAs are sorted by absolute fold change
-#'   (descending) so that the most dysregulated are retained first.
+#' @return Data frame with columns: mirna, direction, abs_log2fc (if available
+#'   from dbDEMC 3.0, otherwise NA). When fold change data is available,
+#'   miRNAs are sorted by absolute fold change (descending) so that the most
+#'   dysregulated are retained first.
 filter_cancer_mirnas <- function(mirmap_path,
-                                 dbdemc_path,
+                                 dbdemc_high_path,
+                                 dbdemc_low_path = NULL,
                                  cancer_type,
-                                 status,
                                  mirna_remove = character(0),
                                  max_mirnas = 808,
                                  verbose = TRUE) {
   mirmap_mirnas <- read.csv(mirmap_path, sep = ",")
-  cancer_data <- read.csv(dbdemc_path, sep = "\t")
 
-  # Flexibly identify columns (handles both dbDEMC 2.0 and 3.0 formats)
-  col_names <- colnames(cancer_data)
+  # Internal helper: parse a single dbDEMC file and return standardized df
+  parse_dbdemc_file <- function(path, direction_label) {
+    raw <- read.csv(path, sep = "\t")
+    col_names <- colnames(raw)
 
-  # Cancer type column
-  cancer_col <- grep("^Cancer\\.?Type$|^cancer\\.?type$", col_names,
-                      value = TRUE, ignore.case = TRUE)
-  if (length(cancer_col) == 0) cancer_col <- col_names[1]
-  cancer_col <- cancer_col[1]
+    # Cancer type column
+    cancer_col <- grep("^Cancer\\.?Type$|^cancer\\.?type$", col_names,
+                        value = TRUE, ignore.case = TRUE)
+    if (length(cancer_col) == 0) cancer_col <- col_names[1]
+    cancer_col <- cancer_col[1]
 
-  # Status column (up/down regulation)
-  status_col <- grep("^Status$|^Expression$|^Regulation$", col_names,
-                      value = TRUE, ignore.case = TRUE)
-  if (length(status_col) == 0) status_col <- col_names[2]
-  status_col <- status_col[1]
+    # Status column (up/down regulation)
+    status_col <- grep("^Status$|^Expression$|^Regulation$", col_names,
+                        value = TRUE, ignore.case = TRUE)
+    if (length(status_col) == 0) status_col <- col_names[2]
+    status_col <- status_col[1]
 
-  # miRNA ID column
-  mirna_col <- grep("miRBase|miRNA\\.?ID|miRNA\\.?Name", col_names,
-                     value = TRUE, ignore.case = TRUE)
-  if (length(mirna_col) == 0) mirna_col <- col_names[3]
-  mirna_col <- mirna_col[1]
+    # miRNA ID column
+    mirna_col <- grep("miRBase|miRNA\\.?ID|miRNA\\.?Name", col_names,
+                       value = TRUE, ignore.case = TRUE)
+    if (length(mirna_col) == 0) mirna_col <- col_names[3]
+    mirna_col <- mirna_col[1]
 
-  # Optional fold change column (dbDEMC 3.0)
-  fc_col <- grep("fold\\.?change|log\\.?fc|logFC|R\\.?fold", col_names,
-                  value = TRUE, ignore.case = TRUE)
-  has_fc <- length(fc_col) > 0
-  if (has_fc) fc_col <- fc_col[1]
+    # Optional fold change column (dbDEMC 3.0)
+    fc_col <- grep("fold\\.?change|log\\.?fc|logFC|R\\.?fold", col_names,
+                    value = TRUE, ignore.case = TRUE)
+    has_fc <- length(fc_col) > 0
+    if (has_fc) fc_col <- fc_col[1]
 
-  # Optional Q-value / FDR column (dbDEMC 3.0)
-  q_col <- grep("Q\\.?value|FDR|adj\\.?P|q\\.?val", col_names,
-                 value = TRUE, ignore.case = TRUE)
-  has_q <- length(q_col) > 0
-  if (has_q) q_col <- q_col[1]
+    filtered <- raw %>%
+      dplyr::filter(.data[[cancer_col]] == cancer_type)
 
-  cancer_data <- cancer_data %>%
-    dplyr::filter(.data[[cancer_col]] == cancer_type) %>%
-    dplyr::filter(toupper(.data[[status_col]]) == toupper(status))
+    # If file has a status column with mixed directions, filter to expected
+    unique_statuses <- unique(toupper(filtered[[status_col]]))
+    if (length(unique_statuses) > 1) {
+      filtered <- filtered %>%
+        dplyr::filter(toupper(.data[[status_col]]) == toupper(direction_label))
+    }
 
-  cancer_mirnas <- unique(cancer_data[[mirna_col]])
-  cancer_mirnas <- cancer_mirnas[cancer_mirnas != "unknown"]
+    mirnas <- unique(filtered[[mirna_col]])
+    mirnas <- mirnas[mirnas != "unknown"]
 
-  common_mirnas <- intersect(mirmap_mirnas$mature_name, cancer_mirnas)
-  common_mirnas <- common_mirnas[!common_mirnas %in% mirna_remove]
+    result <- data.frame(mirna = mirnas, direction = direction_label,
+                         stringsAsFactors = FALSE)
 
-  # If fold change data is available, sort by abs(fold change) descending
-  # so the most dysregulated miRNAs are retained when truncating to max_mirnas
-  if (has_fc && length(common_mirnas) > 0) {
-    fc_data <- cancer_data %>%
-      dplyr::filter(.data[[mirna_col]] %in% common_mirnas) %>%
-      dplyr::group_by(.data[[mirna_col]]) %>%
-      dplyr::summarise(
-        abs_fc = mean(abs(as.numeric(.data[[fc_col]])), na.rm = TRUE),
-        .groups = "drop"
-      ) %>%
-      dplyr::arrange(dplyr::desc(abs_fc))
-    ranked_mirnas <- fc_data[[mirna_col]]
-    # Preserve ranked order, then append any unranked miRNAs
-    common_mirnas <- c(
-      ranked_mirnas[ranked_mirnas %in% common_mirnas],
-      setdiff(common_mirnas, ranked_mirnas)
-    )
+    if (has_fc && nrow(filtered) > 0) {
+      fc_summary <- filtered %>%
+        dplyr::filter(.data[[mirna_col]] %in% mirnas) %>%
+        dplyr::group_by(.data[[mirna_col]]) %>%
+        dplyr::summarise(
+          abs_log2fc = mean(abs(as.numeric(.data[[fc_col]])), na.rm = TRUE),
+          .groups = "drop"
+        )
+      result <- result %>%
+        dplyr::left_join(
+          fc_summary %>% dplyr::rename(mirna = 1),
+          by = "mirna"
+        )
+    } else {
+      result$abs_log2fc <- NA_real_
+    }
+
+    result
+  }
+
+  # Parse upregulated file
+  up_df <- parse_dbdemc_file(dbdemc_high_path, "up")
+
+  # Parse downregulated file if provided
+  if (!is.null(dbdemc_low_path) && file.exists(dbdemc_low_path)) {
+    down_df <- parse_dbdemc_file(dbdemc_low_path, "down")
+    cancer_df <- dplyr::bind_rows(up_df, down_df)
+  } else {
+    cancer_df <- up_df
+  }
+
+  has_fc <- any(!is.na(cancer_df$abs_log2fc))
+
+  # Intersect with miRmap miRNAs
+  cancer_df <- cancer_df %>%
+    dplyr::filter(mirna %in% mirmap_mirnas$mature_name) %>%
+    dplyr::filter(!mirna %in% mirna_remove)
+
+  # Deduplicate: if a miRNA appears in both up and down, keep the entry with
+  # higher fold change (or first occurrence if no FC data)
+  if (any(duplicated(cancer_df$mirna))) {
+    if (has_fc) {
+      cancer_df <- cancer_df %>%
+        dplyr::arrange(dplyr::desc(abs_log2fc)) %>%
+        dplyr::distinct(mirna, .keep_all = TRUE)
+    } else {
+      cancer_df <- cancer_df %>%
+        dplyr::distinct(mirna, .keep_all = TRUE)
+    }
+  }
+
+  # Sort by abs fold change if available
+  if (has_fc) {
+    cancer_df <- cancer_df %>%
+      dplyr::arrange(dplyr::desc(abs_log2fc))
     if (verbose) message("  dbDEMC fold change data available; miRNAs ranked by dysregulation magnitude")
   }
 
-  if (length(common_mirnas) > max_mirnas) {
-    common_mirnas <- common_mirnas[1:max_mirnas]
+  if (nrow(cancer_df) > max_mirnas) {
+    cancer_df <- cancer_df[1:max_mirnas, ]
   }
+
+  n_up <- sum(cancer_df$direction == "up")
+  n_down <- sum(cancer_df$direction == "down")
 
   if (verbose) {
     message(sprintf("miRmap miRNAs: %d", nrow(mirmap_mirnas)))
-    message(sprintf("dbDEMC %s-%s miRNAs: %d", cancer_type, status,
-                    length(cancer_mirnas)))
-    message(sprintf("Common miRNAs (after filtering): %d",
-                    length(common_mirnas)))
-    if (has_fc) message(sprintf("  Fold change column: %s", fc_col))
-    if (has_q) message(sprintf("  Q-value column: %s", q_col))
+    message(sprintf("dbDEMC %s miRNAs: %d up, %d down, %d total",
+                    cancer_type, n_up, n_down, nrow(cancer_df)))
+    if (has_fc) message("  Fold change data used for ranking")
   }
 
-  common_mirnas
+  cancer_df
 }
 
 
@@ -1088,10 +1138,10 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 #'   down) simultaneously. Set use_geo = TRUE (default).
 #'
 #'   **dbDEMC fallback:** Uses pre-compiled cancer-miRNA associations from
-#'   dbDEMC 3.0 (Yang et al., 2022). Only uses one direction at a time, and
-#'   groups all lung cancers together. When fold change data is available in
-#'   the dbDEMC 3.0 file, miRNAs are ranked by dysregulation magnitude.
-#'   Set use_geo = FALSE.
+#'   dbDEMC 3.0 (Yang et al., 2022). Integrates both up- and down-regulated
+#'   miRNAs simultaneously. Groups all lung cancers together (not SCLC-specific).
+#'   When fold change data is available in the dbDEMC 3.0 file, miRNAs are
+#'   ranked by dysregulation magnitude. Set use_geo = FALSE.
 #'
 #' For TargetScan (Step 2), the preferred approach is to download the TargetScan
 #' 8.0 bulk prediction files locally. These include CNN-based biochemical model
@@ -1134,16 +1184,13 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 #'   Interactions with strong miRTarBase evidence always pass regardless.
 #' @param cancer_type Cancer type for dbDEMC filtering (only used when
 #'   use_geo = FALSE).
-#' @param status Dysregulation direction for dbDEMC ("up" or "down"). Only used
-#'   when use_geo = FALSE. When use_geo = TRUE, both directions are used.
 #' @param mirna_remove Character vector of miRNAs to exclude.
 #' @param max_mirnas Maximum miRNAs to use.
 #' @param mirmap_path Path to miRmap miRNAs CSV (only used when use_geo = FALSE).
-#' @param dbdemc_path Path to dbDEMC 3.0 file (only used when use_geo = FALSE).
-#'   Also accepts dbDEMC 2.0 format files for backwards compatibility.
-#'   If NULL, auto-selects based on cancer_up parameter.
-#' @param cancer_up Logical; TRUE for upregulated, FALSE for downregulated.
-#'   Only used when use_geo = FALSE.
+#' @param dbdemc_high_path Path to dbDEMC 3.0 upregulated miRNAs file
+#'   (only used when use_geo = FALSE). Also accepts dbDEMC 2.0 format.
+#' @param dbdemc_low_path Path to dbDEMC 3.0 downregulated miRNAs file
+#'   (only used when use_geo = FALSE). If NULL, only upregulated are used.
 #' @param save_outputs Logical; save ranking and consensus data to files.
 #' @param output_dir Directory for output files.
 #' @param output_prefix Prefix for output filenames.
@@ -1151,8 +1198,8 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 #'
 #' @return Named numeric vector of gene scores (sums to 1), sorted descending.
 #'   The consensus data frame is attached as attribute "consensus_details".
-#'   When use_geo = TRUE, the DE miRNA table is attached as attribute
-#'   "de_mirnas" (includes log2fc, FDR, direction for each miRNA).
+#'   The DE miRNA table is attached as attribute "de_mirnas" (includes
+#'   direction and, when available, abs_log2fc for each miRNA).
 mirna_calculator <- function(use_geo = TRUE,
                              geo_accession = "GSE19945",
                              case_group = "SCLC",
@@ -1172,12 +1219,11 @@ mirna_calculator <- function(use_geo = TRUE,
                              mirtarbase_strong_only = TRUE,
                              min_databases = 2,
                              cancer_type = "lung cancer",
-                             status = "up",
                              mirna_remove = "hsa-miR-129-1-3p",
                              max_mirnas = 808,
                              mirmap_path = "Data/mirna_data/mirmap_mirnas.csv",
-                             dbdemc_path = NULL,
-                             cancer_up = TRUE,
+                             dbdemc_high_path = "Data/mirna_data/dbdemc_3.0_high.txt",
+                             dbdemc_low_path = "Data/mirna_data/dbdemc_3.0_low.txt",
                              save_outputs = TRUE,
                              output_dir = "Outputs/mirna",
                              output_prefix = "mirna_consensus",
@@ -1225,45 +1271,39 @@ mirna_calculator <- function(use_geo = TRUE,
     # dbDEMC 3.0 fallback (legacy approach)
     if (verbose) {
       message("Using dbDEMC 3.0 filtering (legacy approach)")
-      message("  Note: dbDEMC groups all lung cancers together and only uses one direction.")
+      message("  Note: dbDEMC groups all lung cancers together (not SCLC-specific).")
       message("  Consider use_geo = TRUE for SCLC-specific filtering.")
-    }
-
-    if (is.null(dbdemc_path)) {
-      dbdemc_path <- if (cancer_up) {
-        "Data/mirna_data/dbdemc_3.0_high.txt"
-      } else {
-        "Data/mirna_data/dbdemc_3.0_low.txt"
-      }
     }
 
     # Validate dbDEMC-specific inputs
     validate_mirna_inputs(
       mirmap_path = mirmap_path,
-      dbdemc_path = dbdemc_path,
+      dbdemc_high_path = dbdemc_high_path,
+      dbdemc_low_path = dbdemc_low_path,
       mirdb_path = mirdb_path,
       mirtarbase_path = mirtarbase_path,
       targetscan_path = targetscan_path,
       ts_family_path = ts_family_path,
       cancer_type = cancer_type,
-      status = status,
       ts_context_threshold = ts_context_threshold,
       mirdb_score_threshold = mirdb_score_threshold,
       min_databases = min_databases
     )
 
-    common_mirnas <- filter_cancer_mirnas(
+    de_mirna_df <- filter_cancer_mirnas(
       mirmap_path = mirmap_path,
-      dbdemc_path = dbdemc_path,
+      dbdemc_high_path = dbdemc_high_path,
+      dbdemc_low_path = dbdemc_low_path,
       cancer_type = cancer_type,
-      status = status,
       mirna_remove = mirna_remove,
       max_mirnas = max_mirnas,
       verbose = verbose
     )
 
+    common_mirnas <- de_mirna_df$mirna
+
     if (length(common_mirnas) == 0) {
-      stop("No miRNAs passed cancer filtering. Check cancer_type and status.")
+      stop("No miRNAs passed cancer filtering. Check cancer_type and dbDEMC files.")
     }
   }
 
@@ -1328,9 +1368,9 @@ mirna_calculator <- function(use_geo = TRUE,
   )
 
   # =========================================================================
-  # Step 4: Weight by miRNA dysregulation magnitude (GEO mode only)
+  # Step 4: Weight by miRNA dysregulation magnitude
   # =========================================================================
-  if (use_geo && !is.null(de_mirna_df)) {
+  if (!is.null(de_mirna_df) && "abs_log2fc" %in% names(de_mirna_df)) {
     if (verbose) message("\n========== Step 4: Weight by miRNA dysregulation ==========")
 
     # Join fold change information to consensus interactions
@@ -1363,7 +1403,7 @@ mirna_calculator <- function(use_geo = TRUE,
   # =========================================================================
   # Step 5: Compute confidence-weighted gene ranking
   # =========================================================================
-  step_num <- if (use_geo) 5 else 4
+  step_num <- if (!is.null(de_mirna_df) && "abs_log2fc" %in% names(de_mirna_df)) 5 else 4
   if (verbose) message(sprintf("\n========== Step %d: Compute gene rankings ==========",
                                 step_num))
   ranking <- compute_gene_ranking(consensus_df, verbose = verbose)
