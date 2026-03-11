@@ -74,6 +74,7 @@ nested_cv <- function(cox_df,
   # Set up parallel processing
   num_cores <- parallel::detectCores()
   registerDoParallel(cores = num_cores)
+  on.exit(try(stopImplicitCluster(), silent = TRUE), add = TRUE)
 
   # Prepare gene list: intersect candidates with available columns
   if (is.data.frame(candidate_genes)) {
@@ -81,7 +82,14 @@ nested_cv <- function(cox_df,
   }
   candidate_genes <- tolower(candidate_genes)
   candidate_genes <- intersect(candidate_genes, colnames(cox_df))
-  candidate_genes <- head(candidate_genes, n = gene_num)
+
+  if (length(candidate_genes) > gene_num) {
+    if (verbose) {
+      message(sprintf("  Note: truncating %d candidates to gene_num = %d (first %d after intersection).",
+                      length(candidate_genes), gene_num, gene_num))
+    }
+    candidate_genes <- head(candidate_genes, n = gene_num)
+  }
 
   if (length(candidate_genes) == 0) {
     stop("No candidate genes found in cox_df columns.")
@@ -95,6 +103,11 @@ nested_cv <- function(cox_df,
   if (!"vital.status" %in% colnames(cox_df)) {
     stop("Column 'vital.status' not found in cox_df.")
   }
+
+  # Normalize column names once upfront to avoid repeated make.names() calls
+  colnames(cox_df) <- make.names(colnames(cox_df))
+  candidate_genes <- make.names(candidate_genes)
+  time_col <- make.names(time_col)
 
   # Storage for all results
   all_fold_results <- list()
@@ -138,14 +151,11 @@ nested_cv <- function(cox_df,
       }
 
       # ----- Inner CV: feature selection + lambda tuning on train_data -----
-      # Build model matrix from candidate genes
+      # Build model matrix from candidate genes (names already normalized)
       available_genes <- intersect(candidate_genes, colnames(train_data))
       if (length(available_genes) == 0) next
 
-      formula_str <- paste0("~", paste0(make.names(available_genes),
-                                         collapse = "+"))
-      colnames(train_data) <- make.names(colnames(train_data))
-      colnames(test_data) <- make.names(colnames(test_data))
+      formula_str <- paste0("~", paste0(available_genes, collapse = "+"))
 
       train_x <- tryCatch(
         model.matrix(as.formula(formula_str), train_data),
@@ -154,12 +164,18 @@ nested_cv <- function(cox_df,
       if (is.null(train_x)) next
 
       train_y <- Surv(
-        time = train_data[[make.names(time_col)]],
+        time = train_data[[time_col]],
         event = train_data$vital.status
       )
 
-      # Inner CV to select lambda
-      inner_folds <- sample(rep(1:n_inner_folds, length.out = nrow(train_data)))
+      # Inner CV to select lambda (stratified by vital.status)
+      inner_folds <- integer(nrow(train_data))
+      train_deceased <- which(train_data$vital.status == 1)
+      train_alive <- which(train_data$vital.status == 0)
+      inner_folds[train_deceased] <- sample(rep(1:n_inner_folds,
+                                                 length.out = length(train_deceased)))
+      inner_folds[train_alive] <- sample(rep(1:n_inner_folds,
+                                              length.out = length(train_alive)))
 
       inner_cv <- tryCatch(
         cv.glmnet(
@@ -194,7 +210,7 @@ nested_cv <- function(cox_df,
       if (is.null(test_x)) next
 
       test_y <- Surv(
-        time = test_data[[make.names(time_col)]],
+        time = test_data[[time_col]],
         event = test_data$vital.status
       )
 
@@ -247,12 +263,18 @@ nested_cv <- function(cox_df,
     )
 
   # Overall summary
+  ci_vals <- per_seed_df$mean_outer_cindex
+  ci_95_lower <- mean(ci_vals) - 1.96 * sd(ci_vals)
+  ci_95_upper <- mean(ci_vals) + 1.96 * sd(ci_vals)
+
   summary_df <- data.frame(
-    mean_cindex = mean(per_seed_df$mean_outer_cindex),
-    sd_cindex = sd(per_seed_df$mean_outer_cindex),
-    median_cindex = median(per_seed_df$mean_outer_cindex),
-    iqr_lower = quantile(per_seed_df$mean_outer_cindex, 0.25),
-    iqr_upper = quantile(per_seed_df$mean_outer_cindex, 0.75),
+    mean_cindex = mean(ci_vals),
+    sd_cindex = sd(ci_vals),
+    ci_95_lower = ci_95_lower,
+    ci_95_upper = ci_95_upper,
+    median_cindex = median(ci_vals),
+    iqr_lower = quantile(ci_vals, 0.25),
+    iqr_upper = quantile(ci_vals, 0.75),
     n_seeds = length(master_seeds),
     n_outer_folds = n_outer_folds,
     n_inner_folds = n_inner_folds,
@@ -289,6 +311,8 @@ nested_cv <- function(cox_df,
   if (verbose) {
     message("\n===== Nested CV Results =====")
     message(sprintf("Mean outer C-index:   %.4f", summary_df$mean_cindex))
+    message(sprintf("95%% CI:               [%.4f, %.4f]",
+                    summary_df$ci_95_lower, summary_df$ci_95_upper))
     message(sprintf("SD across seeds:      %.4f", summary_df$sd_cindex))
     message(sprintf("Median outer C-index: %.4f", summary_df$median_cindex))
     message(sprintf("IQR:                  [%.4f, %.4f]",
