@@ -30,6 +30,9 @@ config <- list(
   gene_num_discovery = 500,     # large pool for lasso to select from
   lambda_rule = "lambda.1se",   # conservative lambda (recommended)
 
+  # --- Time-dependent AUC evaluation times ---
+  eval_times = c(12, 24, 36),   # 1-year, 2-year, 3-year AUC
+
   # --- Gene stability threshold ---
   stability_threshold = 0.5,    # genes selected in >50% of fits
 
@@ -108,6 +111,7 @@ for (pool_name in names(gene_pools)) {
     my_alpha         = 1,       # lasso for feature selection
     gene_num         = config$gene_num_discovery,
     lambda_rule      = config$lambda_rule,
+    eval_times       = config$eval_times,
     output_dir       = out_dir
   )
 }
@@ -185,6 +189,7 @@ if (length(all_stable) > 0) {
     my_alpha         = 0,       # ridge — genes are pre-selected
     gene_num         = length(all_stable),
     lambda_rule      = config$lambda_rule,
+    eval_times       = config$eval_times,
     output_dir       = file.path(config$output_base, "stable_genes_validation")
   )
 } else {
@@ -207,6 +212,7 @@ four_gene_result <- nested_cv(
   my_alpha         = 0,
   gene_num         = 4,
   lambda_rule      = config$lambda_rule,
+  eval_times       = config$eval_times,
   output_dir       = file.path(config$output_base, "four_gene_validation")
 )
 

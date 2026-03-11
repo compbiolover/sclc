@@ -4,16 +4,188 @@
 # an honest, unbiased estimate of model generalization performance. The outer
 # loop holds out test folds that are never seen during gene selection or
 # lambda tuning, eliminating the optimism bias present in standard CV.
+#
+# Seeds are parallelized via mclapply (fork-based) for M-series Macs.
+# Each seed runs all outer folds sequentially; cv.glmnet runs single-threaded
+# within each fork to avoid nested parallelism overhead.
 
 suppressMessages({
-  library(doParallel)
   library(glmnet)
   library(parallel)
   library(survival)
   library(tidyverse)
 })
 
+
+# =========================================================================
+# Helper: run nested CV for a single master seed
+# =========================================================================
+#
+# This is the workhorse called by mclapply. It must be self-contained
+# (no references to the parent environment beyond its arguments) so that
+# forked processes work cleanly.
+
+.run_one_seed <- function(seed, cox_df, candidate_genes, time_col,
+                          n_outer_folds, n_inner_folds, my_alpha,
+                          max_it, lambda_rule, eval_times) {
+  set.seed(seed)
+
+  n <- nrow(cox_df)
+  deceased_idx <- which(cox_df$vital.status == 1)
+  alive_idx <- which(cox_df$vital.status == 0)
+
+  # Stratified outer fold assignment
+
+  outer_folds <- integer(n)
+  outer_folds[deceased_idx] <- sample(rep(1:n_outer_folds,
+                                          length.out = length(deceased_idx)))
+  outer_folds[alive_idx] <- sample(rep(1:n_outer_folds,
+                                        length.out = length(alive_idx)))
+
+  fold_results <- list()
+  gene_counts <- list()
+
+  has_timeROC <- requireNamespace("timeROC", quietly = TRUE)
+
+  for (k in 1:n_outer_folds) {
+    test_idx <- which(outer_folds == k)
+    train_idx <- which(outer_folds != k)
+
+    train_data <- cox_df[train_idx, ]
+    test_data <- cox_df[test_idx, ]
+
+    # Need events in test set for concordance
+    if (sum(test_data$vital.status) == 0 || nrow(test_data) < 3) next
+
+    # Build model matrix
+    available_genes <- intersect(candidate_genes, colnames(train_data))
+    if (length(available_genes) == 0) next
+
+    formula_str <- paste0("~", paste0(available_genes, collapse = "+"))
+
+    train_x <- tryCatch(
+      model.matrix(as.formula(formula_str), train_data),
+      error = function(e) NULL
+    )
+    if (is.null(train_x)) next
+
+    train_y <- Surv(
+      time = train_data[[time_col]],
+      event = train_data$vital.status
+    )
+
+    # Stratified inner folds
+    inner_folds <- integer(nrow(train_data))
+    train_deceased <- which(train_data$vital.status == 1)
+    train_alive <- which(train_data$vital.status == 0)
+    inner_folds[train_deceased] <- sample(rep(1:n_inner_folds,
+                                               length.out = length(train_deceased)))
+    inner_folds[train_alive] <- sample(rep(1:n_inner_folds,
+                                            length.out = length(train_alive)))
+
+    # Inner CV — parallel = FALSE because we parallelize at seed level
+    inner_cv <- tryCatch(
+      cv.glmnet(
+        x = train_x, y = train_y,
+        nfolds = n_inner_folds,
+        type.measure = "C",
+        maxit = max_it,
+        family = "cox",
+        parallel = FALSE,
+        alpha = my_alpha,
+        foldid = inner_folds
+      ),
+      error = function(e) NULL
+    )
+    if (is.null(inner_cv)) next
+
+    # Selected genes
+    inner_coefs <- coef(inner_cv, s = lambda_rule)
+    selected_idx <- which(as.vector(inner_coefs) != 0)
+    selected_genes <- rownames(inner_coefs)[selected_idx]
+
+    for (g in selected_genes) {
+      gene_counts[[g]] <- (gene_counts[[g]] %||% 0L) + 1L
+    }
+
+    # Evaluate on outer test fold
+    test_x <- tryCatch(
+      model.matrix(as.formula(formula_str), test_data),
+      error = function(e) NULL
+    )
+    if (is.null(test_x)) next
+
+    test_y <- Surv(
+      time = test_data[[time_col]],
+      event = test_data$vital.status
+    )
+
+    test_pred <- tryCatch(
+      as.vector(predict(inner_cv, newx = test_x, s = lambda_rule,
+                        type = "link")),
+      error = function(e) NULL
+    )
+    if (is.null(test_pred)) next
+
+    # Global (Harrell's) C-index
+    outer_cindex <- tryCatch({
+      concordance_obj <- survival::concordance(test_y ~ test_pred)
+      concordance_obj$concordance
+    }, error = function(e) NA_real_)
+
+    if (is.na(outer_cindex)) next
+
+    # Time-dependent AUC via timeROC at each eval_time
+    td_aucs <- rep(NA_real_, length(eval_times))
+    names(td_aucs) <- paste0("auc_t", eval_times)
+
+    if (has_timeROC && length(eval_times) > 0) {
+      troc <- tryCatch(
+        timeROC::timeROC(
+          T = test_data[[time_col]],
+          delta = test_data$vital.status,
+          marker = test_pred,
+          cause = 1,
+          times = eval_times,
+          iid = FALSE
+        ),
+        error = function(e) NULL
+      )
+      if (!is.null(troc)) {
+        td_aucs <- troc$AUC[as.character(eval_times)]
+      }
+    }
+
+    # Build result row
+    row <- data.frame(
+      master_seed = seed,
+      outer_fold = k,
+      outer_cindex = round(outer_cindex, 4),
+      n_train = nrow(train_data),
+      n_test = nrow(test_data),
+      n_selected_genes = length(selected_genes),
+      selected_genes = paste(selected_genes, collapse = ","),
+      lambda_selected = inner_cv[[lambda_rule]],
+      stringsAsFactors = FALSE
+    )
+
+    # Append time-dependent AUC columns
+    for (i in seq_along(eval_times)) {
+      row[[paste0("auc_t", eval_times[i])]] <- round(td_aucs[i], 4)
+    }
+
+    fold_results[[length(fold_results) + 1]] <- row
+  }
+
+  list(fold_results = fold_results, gene_counts = gene_counts)
+}
+
+
 #' Run nested cross-validation for a penalized Cox model
+#'
+#' Seeds are parallelized via \code{parallel::mclapply} (fork-based),
+#' which works well on M-series Macs. The inner \code{cv.glmnet} runs
+#' single-threaded to avoid nested parallelism overhead.
 #'
 #' @param cox_df Data frame with columns: patient.id, vital.status, time,
 #'   and gene expression columns.
@@ -32,14 +204,20 @@ suppressMessages({
 #' @param lambda_rule Which lambda to use from inner CV: "lambda.1se"
 #'   (default, more conservative/generalizable) or "lambda.min" (best
 #'   in-sample performance but more prone to overfitting).
+#' @param eval_times Numeric vector of time points (in the same units as
+#'   the time column) at which to compute time-dependent AUC. Requires
+#'   the timeROC package. Default: c(12, 24, 36) for 1/2/3-year AUC.
 #' @param progress_free Logical; if TRUE, use time2 column instead of time.
+#' @param n_cores Number of cores for seed-level parallelism. Default uses
+#'   all available cores. On M-series Macs, this uses fork-based mclapply.
 #' @param output_dir Directory to save results. Created if it doesn't exist.
 #' @param verbose Logical; print progress messages.
 #'
 #' @return A list with:
-#'   - summary: data frame with mean, sd, median, and IQR of outer C-indices
-#'   - per_seed: data frame with per-seed mean outer C-index
-#'   - all_folds: data frame with every outer fold C-index
+#'   - summary: data frame with mean, sd, 95% CI, median, IQR of outer C-indices,
+#'     plus mean time-dependent AUC at each eval_time
+#'   - per_seed: data frame with per-seed mean outer C-index and AUCs
+#'   - all_folds: data frame with every outer fold C-index and AUCs
 #'   - gene_stability: data frame showing how often each gene was selected
 #'     across all outer folds. In discovery mode, genes that appear with
 #'     high frequency (>50%) across folds are strong signature candidates.
@@ -52,7 +230,9 @@ nested_cv <- function(cox_df,
                       max_it = 100000,
                       gene_num = 20,
                       lambda_rule = "lambda.1se",
+                      eval_times = c(12, 24, 36),
                       progress_free = FALSE,
+                      n_cores = NULL,
                       output_dir = "Outputs/nested_cv",
                       verbose = TRUE) {
   # Input validation
@@ -70,11 +250,6 @@ nested_cv <- function(cox_df,
   if (!dir.exists(output_dir)) {
     dir.create(output_dir, recursive = TRUE)
   }
-
-  # Set up parallel processing
-  num_cores <- parallel::detectCores()
-  registerDoParallel(cores = num_cores)
-  on.exit(try(stopImplicitCluster(), silent = TRUE), add = TRUE)
 
   # Prepare gene list: intersect candidates with available columns
   if (is.data.frame(candidate_genes)) {
@@ -109,138 +284,82 @@ nested_cv <- function(cox_df,
   candidate_genes <- make.names(candidate_genes)
   time_col <- make.names(time_col)
 
-  # Storage for all results
+  # Check for timeROC
+  has_timeROC <- requireNamespace("timeROC", quietly = TRUE)
+  if (!has_timeROC && length(eval_times) > 0) {
+    if (verbose) {
+      message("  timeROC package not installed — skipping time-dependent AUC.")
+      message("  Install with: install.packages('timeROC')")
+    }
+    eval_times <- numeric(0)
+  }
+
+  # Filter eval_times to those within observed time range
+  if (length(eval_times) > 0) {
+    max_time <- max(cox_df[[time_col]], na.rm = TRUE)
+    valid_times <- eval_times[eval_times < max_time]
+    if (length(valid_times) < length(eval_times) && verbose) {
+      dropped <- setdiff(eval_times, valid_times)
+      message(sprintf("  Dropped eval_times > max observed time (%.1f): %s",
+                      max_time, paste(dropped, collapse = ", ")))
+    }
+    eval_times <- valid_times
+  }
+
+  # Determine number of cores for seed-level parallelism
+  if (is.null(n_cores)) {
+    n_cores <- parallel::detectCores()
+  }
+  n_cores <- min(n_cores, length(master_seeds))
+
+  if (verbose) {
+    message(sprintf("Running nested CV: %d seeds x %d outer folds, %d cores",
+                    length(master_seeds), n_outer_folds, n_cores))
+    message(sprintf("  alpha = %s, lambda_rule = %s, %d candidate genes",
+                    my_alpha, lambda_rule, length(candidate_genes)))
+    if (length(eval_times) > 0) {
+      message(sprintf("  Time-dependent AUC at: %s",
+                      paste(eval_times, collapse = ", ")))
+    }
+  }
+
+  # Run all seeds in parallel via mclapply (fork-based, ideal for macOS)
+  seed_results <- parallel::mclapply(
+    master_seeds,
+    function(seed) {
+      .run_one_seed(
+        seed = seed,
+        cox_df = cox_df,
+        candidate_genes = candidate_genes,
+        time_col = time_col,
+        n_outer_folds = n_outer_folds,
+        n_inner_folds = n_inner_folds,
+        my_alpha = my_alpha,
+        max_it = max_it,
+        lambda_rule = lambda_rule,
+        eval_times = eval_times
+      )
+    },
+    mc.cores = n_cores,
+    mc.set.seed = FALSE  # we set.seed() inside .run_one_seed
+  )
+
+  # Collect fold results and gene counts across all seeds
   all_fold_results <- list()
   gene_selection_counts <- list()
 
-  for (s_idx in seq_along(master_seeds)) {
-    seed <- master_seeds[s_idx]
-    set.seed(seed)
+  for (res in seed_results) {
+    if (is.null(res)) next
 
-    if (verbose) {
-      message(sprintf("Master seed %d/%d (seed = %d)",
-                      s_idx, length(master_seeds), seed))
+    # Fold results
+    for (fr in res$fold_results) {
+      all_fold_results[[length(all_fold_results) + 1]] <- fr
     }
 
-    # Create outer fold assignments (stratified by vital.status)
-    n <- nrow(cox_df)
-    # Stratified sampling: balance censored/uncensored across folds
-    deceased_idx <- which(cox_df$vital.status == 1)
-    alive_idx <- which(cox_df$vital.status == 0)
-
-    outer_folds <- integer(n)
-    outer_folds[deceased_idx] <- sample(rep(1:n_outer_folds,
-                                            length.out = length(deceased_idx)))
-    outer_folds[alive_idx] <- sample(rep(1:n_outer_folds,
-                                          length.out = length(alive_idx)))
-
-    for (k in 1:n_outer_folds) {
-      # Split into outer train and outer test
-      test_idx <- which(outer_folds == k)
-      train_idx <- which(outer_folds != k)
-
-      train_data <- cox_df[train_idx, ]
-      test_data <- cox_df[test_idx, ]
-
-      # Check that test set has events
-      if (sum(test_data$vital.status) == 0 || nrow(test_data) < 3) {
-        if (verbose) {
-          message(sprintf("  Fold %d: skipping (insufficient test events)", k))
-        }
-        next
-      }
-
-      # ----- Inner CV: feature selection + lambda tuning on train_data -----
-      # Build model matrix from candidate genes (names already normalized)
-      available_genes <- intersect(candidate_genes, colnames(train_data))
-      if (length(available_genes) == 0) next
-
-      formula_str <- paste0("~", paste0(available_genes, collapse = "+"))
-
-      train_x <- tryCatch(
-        model.matrix(as.formula(formula_str), train_data),
-        error = function(e) NULL
-      )
-      if (is.null(train_x)) next
-
-      train_y <- Surv(
-        time = train_data[[time_col]],
-        event = train_data$vital.status
-      )
-
-      # Inner CV to select lambda (stratified by vital.status)
-      inner_folds <- integer(nrow(train_data))
-      train_deceased <- which(train_data$vital.status == 1)
-      train_alive <- which(train_data$vital.status == 0)
-      inner_folds[train_deceased] <- sample(rep(1:n_inner_folds,
-                                                 length.out = length(train_deceased)))
-      inner_folds[train_alive] <- sample(rep(1:n_inner_folds,
-                                              length.out = length(train_alive)))
-
-      inner_cv <- tryCatch(
-        cv.glmnet(
-          x = train_x, y = train_y,
-          nfolds = n_inner_folds,
-          type.measure = "C",
-          maxit = max_it,
-          family = "cox",
-          parallel = TRUE,
-          alpha = my_alpha,
-          foldid = inner_folds
-        ),
-        error = function(e) NULL
-      )
-      if (is.null(inner_cv)) next
-
-      # Get selected genes from inner CV
-      inner_coefs <- coef(inner_cv, s = lambda_rule)
-      selected_idx <- which(as.vector(inner_coefs) != 0)
-      selected_genes <- rownames(inner_coefs)[selected_idx]
-
-      # Track gene selection frequency
-      for (g in selected_genes) {
-        gene_selection_counts[[g]] <- (gene_selection_counts[[g]] %||% 0) + 1
-      }
-
-      # ----- Evaluate on outer test fold -----
-      test_x <- tryCatch(
-        model.matrix(as.formula(formula_str), test_data),
-        error = function(e) NULL
-      )
-      if (is.null(test_x)) next
-
-      test_y <- Surv(
-        time = test_data[[time_col]],
-        event = test_data$vital.status
-      )
-
-      # Predict risk scores on test data using the chosen lambda rule
-      test_pred <- tryCatch(
-        as.vector(predict(inner_cv, newx = test_x, s = lambda_rule,
-                          type = "link")),
-        error = function(e) NULL
-      )
-      if (is.null(test_pred)) next
-
-      # Calculate C-index on held-out test fold
-      outer_cindex <- tryCatch({
-        concordance_obj <- survival::concordance(test_y ~ test_pred)
-        concordance_obj$concordance
-      }, error = function(e) NA_real_)
-
-      if (!is.na(outer_cindex)) {
-        all_fold_results[[length(all_fold_results) + 1]] <- data.frame(
-          master_seed = seed,
-          outer_fold = k,
-          outer_cindex = round(outer_cindex, 4),
-          n_train = nrow(train_data),
-          n_test = nrow(test_data),
-          n_selected_genes = length(selected_genes),
-          selected_genes = paste(selected_genes, collapse = ","),
-          lambda_selected = inner_cv[[lambda_rule]],
-          stringsAsFactors = FALSE
-        )
-      }
+    # Merge gene counts
+    for (g in names(res$gene_counts)) {
+      gene_selection_counts[[g]] <- (gene_selection_counts[[g]] %||% 0L) +
+        res$gene_counts[[g]]
     }
   }
 
@@ -251,7 +370,10 @@ nested_cv <- function(cox_df,
 
   all_folds_df <- do.call(rbind, all_fold_results)
 
-  # Per-seed summary (mean outer C-index per master seed)
+  # Identify AUC columns for aggregation
+  auc_cols <- grep("^auc_t", colnames(all_folds_df), value = TRUE)
+
+  # Per-seed summary
   per_seed_df <- all_folds_df %>%
     group_by(master_seed) %>%
     summarise(
@@ -259,6 +381,8 @@ nested_cv <- function(cox_df,
       sd_outer_cindex = sd(outer_cindex, na.rm = TRUE),
       n_folds_completed = n(),
       mean_n_genes = mean(n_selected_genes),
+      across(all_of(auc_cols), ~ mean(.x, na.rm = TRUE),
+             .names = "mean_{.col}"),
       .groups = "drop"
     )
 
@@ -282,6 +406,16 @@ nested_cv <- function(cox_df,
     lambda_rule = lambda_rule,
     stringsAsFactors = FALSE
   )
+
+  # Add time-dependent AUC summaries
+  for (ac in auc_cols) {
+    mean_col <- paste0("mean_", ac)
+    if (mean_col %in% colnames(per_seed_df)) {
+      vals <- per_seed_df[[mean_col]]
+      summary_df[[paste0("mean_", ac)]] <- round(mean(vals, na.rm = TRUE), 4)
+      summary_df[[paste0("sd_", ac)]] <- round(sd(vals, na.rm = TRUE), 4)
+    }
+  }
 
   # Gene stability: how often each gene was selected across all outer folds
   total_fits <- nrow(all_folds_df)
@@ -317,6 +451,21 @@ nested_cv <- function(cox_df,
     message(sprintf("Median outer C-index: %.4f", summary_df$median_cindex))
     message(sprintf("IQR:                  [%.4f, %.4f]",
                     summary_df$iqr_lower, summary_df$iqr_upper))
+
+    # Time-dependent AUC summary
+    if (length(auc_cols) > 0) {
+      message("\nTime-dependent AUC (mean across seeds):")
+      for (ac in auc_cols) {
+        mean_col <- paste0("mean_", ac)
+        sd_col <- paste0("sd_", ac)
+        if (mean_col %in% colnames(summary_df)) {
+          t_label <- gsub("auc_t", "t=", ac)
+          message(sprintf("  %s: %.4f (SD %.4f)",
+                          t_label, summary_df[[mean_col]], summary_df[[sd_col]]))
+        }
+      }
+    }
+
     message(sprintf("\nTop stable genes (selected in >50%% of fits):"))
     stable <- gene_stability_df %>% filter(selection_frequency > 0.5)
     if (nrow(stable) > 0) {
@@ -365,6 +514,7 @@ nested_cv <- function(cox_df,
 #   my_alpha = 0,
 #   gene_num = 4,
 #   lambda_rule = "lambda.1se",
+#   eval_times = c(12, 24, 36),
 #   output_dir = "Outputs/nested_cv/four_gene_validation"
 # )
 #
@@ -389,6 +539,7 @@ nested_cv <- function(cox_df,
 #   my_alpha = 1,
 #   gene_num = 500,       # let the lasso see a large pool
 #   lambda_rule = "lambda.1se",
+#   eval_times = c(12, 24, 36),
 #   output_dir = "Outputs/nested_cv/sde_discovery"
 # )
 # # Check sde_discovery$gene_stability for consistently selected genes
@@ -404,6 +555,7 @@ nested_cv <- function(cox_df,
 #   my_alpha = 1,
 #   gene_num = 500,
 #   lambda_rule = "lambda.1se",
+#   eval_times = c(12, 24, 36),
 #   output_dir = "Outputs/nested_cv/mad_discovery"
 # )
 #
@@ -418,6 +570,7 @@ nested_cv <- function(cox_df,
 #   my_alpha = 1,
 #   gene_num = 500,
 #   lambda_rule = "lambda.1se",
+#   eval_times = c(12, 24, 36),
 #   output_dir = "Outputs/nested_cv/mirna_discovery"
 # )
 #
