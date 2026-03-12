@@ -10,11 +10,11 @@ test_that("validate_mirna_inputs rejects invalid mirmap_path", {
   expect_error(
     validate_mirna_inputs(
       mirmap_path = 123,
-      dbdemc_path = tempfile(),
+      dbdemc_high_path = tempfile(),
       mirdb_path = NULL,
       mirtarbase_path = NULL,
       cancer_type = "lung cancer",
-      status = "up",
+
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 80,
       min_databases = 2
@@ -27,11 +27,11 @@ test_that("validate_mirna_inputs rejects non-existent mirmap file", {
   expect_error(
     validate_mirna_inputs(
       mirmap_path = "/nonexistent/path.csv",
-      dbdemc_path = tempfile(),
+      dbdemc_high_path = tempfile(),
       mirdb_path = NULL,
       mirtarbase_path = NULL,
       cancer_type = "lung cancer",
-      status = "up",
+
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 80,
       min_databases = 2
@@ -40,28 +40,25 @@ test_that("validate_mirna_inputs rejects non-existent mirmap file", {
   )
 })
 
-test_that("validate_mirna_inputs rejects invalid status", {
+test_that("validate_mirna_inputs rejects non-existent dbdemc_high file", {
   mirmap_f <- tempfile(fileext = ".csv")
-  dbdemc_f <- tempfile(fileext = ".txt")
   writeLines("dummy", mirmap_f)
-  writeLines("dummy", dbdemc_f)
 
   expect_error(
     validate_mirna_inputs(
       mirmap_path = mirmap_f,
-      dbdemc_path = dbdemc_f,
+      dbdemc_high_path = "/nonexistent/dbdemc.txt",
       mirdb_path = NULL,
       mirtarbase_path = NULL,
       cancer_type = "lung cancer",
-      status = "sideways",
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 80,
       min_databases = 2
     ),
-    "status must be 'up' or 'down'"
+    "dbDEMC upregulated file not found"
   )
 
-  unlink(c(mirmap_f, dbdemc_f))
+  unlink(mirmap_f)
 })
 
 test_that("validate_mirna_inputs rejects invalid mirdb_score_threshold", {
@@ -73,11 +70,11 @@ test_that("validate_mirna_inputs rejects invalid mirdb_score_threshold", {
   expect_error(
     validate_mirna_inputs(
       mirmap_path = mirmap_f,
-      dbdemc_path = dbdemc_f,
+      dbdemc_high_path = dbdemc_f,
       mirdb_path = NULL,
       mirtarbase_path = NULL,
       cancer_type = "lung cancer",
-      status = "up",
+
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 150,
       min_databases = 2
@@ -97,11 +94,11 @@ test_that("validate_mirna_inputs rejects invalid min_databases", {
   expect_error(
     validate_mirna_inputs(
       mirmap_path = mirmap_f,
-      dbdemc_path = dbdemc_f,
+      dbdemc_high_path = dbdemc_f,
       mirdb_path = NULL,
       mirtarbase_path = NULL,
       cancer_type = "lung cancer",
-      status = "up",
+
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 80,
       min_databases = 5
@@ -121,11 +118,11 @@ test_that("validate_mirna_inputs accepts valid inputs", {
   expect_invisible(
     validate_mirna_inputs(
       mirmap_path = mirmap_f,
-      dbdemc_path = dbdemc_f,
+      dbdemc_high_path = dbdemc_f,
       mirdb_path = NULL,
       mirtarbase_path = NULL,
       cancer_type = "lung cancer",
-      status = "up",
+
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 80,
       min_databases = 2
@@ -144,11 +141,11 @@ test_that("validate_mirna_inputs rejects non-existent mirdb file when provided",
   expect_error(
     validate_mirna_inputs(
       mirmap_path = mirmap_f,
-      dbdemc_path = dbdemc_f,
+      dbdemc_high_path = dbdemc_f,
       mirdb_path = "/nonexistent/mirdb.txt",
       mirtarbase_path = NULL,
       cancer_type = "lung cancer",
-      status = "up",
+
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 80,
       min_databases = 2
@@ -686,12 +683,12 @@ test_that("validate_mirna_inputs rejects non-existent targetscan_path", {
   expect_error(
     validate_mirna_inputs(
       mirmap_path = mirmap_f,
-      dbdemc_path = dbdemc_f,
+      dbdemc_high_path = dbdemc_f,
       mirdb_path = NULL,
       mirtarbase_path = NULL,
       targetscan_path = "/nonexistent/ts.txt",
       cancer_type = "lung cancer",
-      status = "up",
+
       ts_context_threshold = -0.2,
       mirdb_score_threshold = 80,
       min_databases = 2
