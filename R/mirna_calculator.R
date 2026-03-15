@@ -270,10 +270,13 @@ filter_mirnas_from_geo <- function(geo_accession = "GSE19945",
   }
 
   # Identify case and control samples from phenotype data
-  # Search across all character columns for the group labels
+  # Search across all text-like columns (character and factor) for group labels
+  # GEOquery often returns factors, so coerce everything to character first
   sample_labels <- rep(NA_character_, nrow(pheno))
-  search_cols <- sapply(pheno, is.character)
-  search_text <- apply(pheno[, search_cols, drop = FALSE], 1, paste, collapse = " ")
+  search_cols <- sapply(pheno, function(x) is.character(x) || is.factor(x))
+  pheno_text <- pheno[, search_cols, drop = FALSE]
+  pheno_text[] <- lapply(pheno_text, as.character)
+  search_text <- apply(pheno_text, 1, paste, collapse = " ")
 
   sample_labels[grepl(case_group, search_text, ignore.case = TRUE)] <- "case"
   sample_labels[grepl(control_group, search_text, ignore.case = TRUE)] <- "control"
