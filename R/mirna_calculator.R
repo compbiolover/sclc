@@ -177,7 +177,9 @@ validate_mirna_inputs <- function(mirmap_path,
 #'
 #' @param geo_accession GEO Series accession (default "GSE19945" for SCLC).
 #' @param case_group Character string or regex pattern identifying case
-#'   (disease) samples in the sample titles/characteristics. Default "SCLC".
+#'   (disease) samples in the sample titles/characteristics.
+#'   Default "SCLC|Small.cell lung cancer" to match GSE19945 metadata
+#'   (which uses "tissue: Small-cell lung cancer").
 #' @param control_group Character string or regex identifying control samples.
 #'   Default "Normal|normal|Adjacent normal".
 #' @param fdr_threshold FDR (Benjamini-Hochberg) threshold for significance.
@@ -203,7 +205,7 @@ validate_mirna_inputs <- function(mirmap_path,
 #'   - abs_log2fc: absolute log2 fold change (for weighting)
 #'   Sorted by adj_p_value (most significant first).
 filter_mirnas_from_geo <- function(geo_accession = "GSE19945",
-                                   case_group = "SCLC",
+                                   case_group = "SCLC|Small.cell lung cancer",
                                    control_group = "Normal|normal|Adjacent normal",
                                    fdr_threshold = 0.05,
                                    min_log2fc = 1.0,
@@ -1202,7 +1204,7 @@ compute_gene_ranking <- function(consensus_df, verbose = TRUE) {
 #'   direction and, when available, abs_log2fc for each miRNA).
 mirna_calculator <- function(use_geo = TRUE,
                              geo_accession = "GSE19945",
-                             case_group = "SCLC",
+                             case_group = "SCLC|Small.cell lung cancer",
                              control_group = "Normal|normal|Adjacent normal",
                              de_fdr_threshold = 0.05,
                              de_min_log2fc = 1.0,
