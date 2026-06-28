@@ -46,53 +46,64 @@ replication.
 | **GSE138267** | CDX **single-cell** RNA-seq `[RNA-Seq]` | 25 | The series WS4 uses (per-cell). |
 | **GSE138418** | CDX RNA-seq `[RNA-Seq]` | 18 | Companion CDX RNA-seq series. |
 
-Sequencing platform per GEO: **Illumina HiSeq 2000 (Homo sapiens)**. The
-single-cell capture chemistry and per-cell processing are described in the
-paper's Methods; consult them before re-deriving counts (do not assume a
-droplet/10x pipeline).
+Sequencing platform per GEO: **Illumina HiSeq 2000 (Homo sapiens)**. Each GSM
+ships a **10x-style triplet** (`barcodes.tsv` / `genes.tsv` / `matrix.mtx`)
+inside `<GSM>_<title>.matrix.tar.gz`; `genes.tsv` is `<Ensembl>\t<HGNC symbol>`
+on the **hg19** reference (32,738 genes, **human only**), and `matrix.mtx` is
+genes × cells integer counts (~6k cells/sample).
 
-CDX models in the SuperSeries include **SC4, SC16, SC39, SC49, SC53, SC55,
-SC68, SC75** and **TC568c**, with treatment-naive / chemo-sensitive baselines
-and chemo-resistant (relapsed) counterparts. Resistant arms in the GEO sample
-titles are denoted variously (e.g. a `cr` tag, or the agent used to drive
-resistance such as `LY2606368` (prexasertib) or `Talazoparib`); **verify the
-exact sensitive↔resistant label for each sample against the GEO sample sheet**
-before scoring — pass that mapping to `prepare_resistance_emt()` via
-`sensitive_labels` / `resistant_labels` rather than relying on keyword guessing.
+### Sample structure (verified against GEO, and encoded in `R/fetch_cdx_data.R`)
+
+The 25 GSMs are CDX libraries titled `<MODEL><variant>.<LIBRARY>`. **The
+biological model is the `SC<number>` stem, NOT the dotted prefix** — the drug
+tags (`_LY2606368`, `_Talazoparib`, `_cr`, `cis`, `-1/-2/-3`) are
+treatment-derived *variants of the same model*. Keying on the dotted prefix
+would split `SC4`, `SC4_LY2606368`, `SC4_Talazoparib` into three unpaired
+singletons and destroy the pairing. The `treatment` characteristic gives the
+state:
+
+| `treatment` value | Condition |
+|-------------------|-----------|
+| `untreated`, `vehicle-treated` | **sensitive** |
+| `… , relapsed` (cisplatin / prexasertib / talazoparib) | **resistant** |
+| bare `cisplatin` (on-treatment, not yet relapsed) | **excluded** (NA) — neither a naive baseline nor an established resistant line |
+
+This yields **4 paired models** (sensitive + resistant): **SC4, SC53, SC55,
+SC68**, and **4 sensitive-only** models (SC16, SC39, SC49, SC75; excluded from
+paired tests). One on-treatment sample (`SC55-2`, cisplatin) is excluded by
+default. `cdx_classify_samples()` implements exactly this mapping and is unit-
+tested against the real sheet in `tests/testthat/test-fetch_cdx_data.R`.
 
 ## How to obtain
 
-In R, the cleanest route is Bioconductor **GEOquery** (a soft dependency; not
-required by the WS4 analysis functions, only to fetch raw data):
+`R/fetch_cdx_data.R` automates the whole path (needs network + GEOquery + Matrix):
 
 ```r
-# install.packages("BiocManager"); BiocManager::install("GEOquery")
-library(GEOquery)
-# Supplementary files (processed count matrices) for the single-cell sub-series:
-getGEOSuppFiles("GSE138267", baseDir = "Data/cdx_scrnaseq")
-# Sample-level metadata (titles, characteristics) to build the cell -> model /
-# condition map:
-gse <- getGEO("GSE138267", GSEMatrix = TRUE)
-pData(gse[[1]])           # inspect sample titles & characteristics here
+source("R/fetch_cdx_data.R")
+fetch_cdx_data()        # GEO -> Data/cdx_scrnaseq/{cdx_counts.rds, cell_metadata.tsv}
+# or step by step, to inspect/override the sensitive<->resistant mapping:
+tab <- cdx_sample_table("GSE138267")      # tidy table: gsm,title,model,condition,paired,...
+cdx <- load_cdx_counts(tab)               # download + read + assemble (sensitive/resistant only)
+write_cdx_inputs(cdx)                      # write the two run_resistance.R inputs
 ```
 
-Then build the two WS4 inputs:
+This produces the two WS4 inputs:
 
-1. a **genes-in-rows expression matrix** (HGNC symbols) → score per cell with
-   `score_emt_singlecell()` (from `R/emt_scoring.R`, WS1);
-2. a **per-cell metadata** data.frame with a `model` column and a `condition`
-   column (sensitive/resistant), derived from the GEO sample sheet.
+1. `cdx_counts.rds` — a **genes-in-rows** (HGNC symbol) sparse counts matrix →
+   scored per cell by `score_emt_singlecell()` (`R/emt_scoring.R`, WS1);
+2. `cell_metadata.tsv` — per-cell `cell`, `gsm`, `library`, `model`, `condition`
+   (already resolved to sensitive/resistant, so no keyword guessing downstream).
 
-`prepare_resistance_emt()` joins those two; see `R/run_resistance.R` for the
-wiring.
+`run_resistance.R` reads both, scores, and runs the three WS4 tests.
 
-## Layout expected by the loader / runner
+## Layout produced by the loader / expected by the runner
 
 ```
 Data/cdx_scrnaseq/
   PROVENANCE.md            <- this file (committed)
-  GSE138267/               <- downloaded matrices (NOT committed; gitignored)
-  cell_metadata.tsv        <- cell, model, condition (NOT committed; gitignored)
+  download/                <- per-GSM tarballs + extracted triplets (gitignored)
+  cdx_counts.rds           <- genes x cells sparse matrix (gitignored)
+  cell_metadata.tsv        <- cell, gsm, library, model, condition (gitignored)
 ```
 
 ## Notes & caveats
@@ -100,10 +111,12 @@ Data/cdx_scrnaseq/
 - **Gene IDs** must be HGNC symbols for the WS1 EMT scorers; map Ensembl →
   symbol first if needed (the scorers warn on low overlap and error if < 1–3
   genes match).
-- **Xenograft contamination**: CDX scRNA-seq can carry mouse stromal reads.
-  Use the authors' human-filtered matrices, or filter to human cells, before
-  scoring — mouse-derived cells would corrupt both the EMT axis and the
-  per-model summaries.
+- **Xenograft contamination**: the deposited matrices are aligned to a
+  **human-only** hg19 reference (no `ENSMUSG` genes), so mouse stromal reads are
+  not represented as mouse genes. Mouse cells could still align spuriously to
+  human orthologs; the EMT axis is tumor-intrinsic, but very low-count or
+  clearly non-tumor cells should be filtered (`load_cdx_counts()` keeps all
+  cells — apply QC upstream if needed).
 - **Unit of replication**: there are only a handful of paired CDX models, so the
   per-cell counts are large but the *paired* sample size is small. WS4 reports
   per-model deltas and sign-consistency alongside the paired Wilcoxon p-value
