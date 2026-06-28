@@ -152,4 +152,8 @@ test_that("filter_cells_min_umi drops low-depth cells and aligns metadata", {
   m2 <- suppressMessages(filter_cells_min_umi(m, min_umi = 50))
   expect_equal(colnames(m2), c("B","D"))                  # no-meta path returns matrix
   expect_error(filter_cells_min_umi(m, min_umi = 1e6), "No cells pass")
+  # a surviving cell missing from metadata must abort, not inject NA rows
+  meta_bad <- meta[meta$cell != "D", ]                    # D survives QC but has no row
+  expect_error(suppressMessages(filter_cells_min_umi(m, meta_bad, min_umi = 50)),
+               "absent from")
 })

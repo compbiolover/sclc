@@ -343,7 +343,15 @@ filter_cells_min_umi <- function(counts, cell_meta = NULL, min_umi = 1000,
   if (!cell_col %in% names(cell_meta)) {
     cli::cli_abort("{.arg cell_meta} has no {.val {cell_col}} column.")
   }
-  cm <- cell_meta[match(colnames(counts2), cell_meta[[cell_col]]), , drop = FALSE]
+  idx <- match(colnames(counts2), cell_meta[[cell_col]])
+  if (anyNA(idx)) {
+    miss <- colnames(counts2)[is.na(idx)]
+    cli::cli_abort(c(
+      "x" = "{length(miss)} surviving cell(s) are absent from {.arg cell_meta} (e.g. {.val {utils::head(miss, 5)}}).",
+      "i" = "Every column of {.arg counts} must have a row in {.arg cell_meta} (matched on {.val {cell_col}})."
+    ))
+  }
+  cm <- cell_meta[idx, , drop = FALSE]
   rownames(cm) <- NULL
   list(counts = counts2, cell_meta = cm)
 }
