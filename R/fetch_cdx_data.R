@@ -313,6 +313,41 @@ load_cdx_counts <- function(sample_table, destdir = "Data/cdx_scrnaseq/download"
   list(counts = counts, cell_meta = cell_meta)
 }
 
+#' Filter cells by minimum library size (UMI QC)
+#'
+#' Drops low-quality cells whose total counts fall below `min_umi`. This matters
+#' for WS4 because the per-cell EMT score correlates with sequencing depth, and
+#' some GSE138267 libraries (notably SC55's resistant LB19 sample, ~600 median
+#' UMI) are shallow enough to confound the resistant-vs-sensitive comparison.
+#'
+#' @param counts Genes-in-rows (sparse) counts matrix, cells in columns.
+#' @param cell_meta Optional per-cell metadata with a `cell` id column; if given,
+#'   it is filtered to the surviving cells and returned alongside the matrix.
+#' @param min_umi Minimum total counts per cell to keep. Default 1000.
+#' @param cell_col Cell-id column in `cell_meta`. Default "cell".
+#' @return If `cell_meta` is NULL, the filtered counts matrix; otherwise a list
+#'   `counts` + `cell_meta` aligned to the surviving cells.
+#' @export
+filter_cells_min_umi <- function(counts, cell_meta = NULL, min_umi = 1000,
+                                 cell_col = "cell") {
+  .cdx_require("Matrix", bioc = FALSE)
+  depth <- Matrix::colSums(counts)
+  keep <- depth >= min_umi
+  n_drop <- sum(!keep)
+  if (n_drop > 0) {
+    cli::cli_inform("UMI QC: dropping {n_drop}/{length(keep)} cell(s) with < {min_umi} total counts.")
+  }
+  if (sum(keep) == 0) cli::cli_abort("No cells pass the {min_umi}-UMI threshold; lower {.arg min_umi}.")
+  counts2 <- counts[, keep, drop = FALSE]
+  if (is.null(cell_meta)) return(counts2)
+  if (!cell_col %in% names(cell_meta)) {
+    cli::cli_abort("{.arg cell_meta} has no {.val {cell_col}} column.")
+  }
+  cm <- cell_meta[match(colnames(counts2), cell_meta[[cell_col]]), , drop = FALSE]
+  rownames(cm) <- NULL
+  list(counts = counts2, cell_meta = cm)
+}
+
 #' Write the WS4 inputs that run_resistance.R expects
 #'
 #' @param cdx Output of [load_cdx_counts()].

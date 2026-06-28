@@ -139,3 +139,17 @@ test_that("read_10x_triplet reads a gzipped MatrixMarket matrix", {
   expect_equal(as.numeric(m["GENEA", "BC1"]), 9)
   expect_equal(as.numeric(m["GENEB", "BC2"]), 4)
 })
+
+test_that("filter_cells_min_umi drops low-depth cells and aligns metadata", {
+  skip_if_not_installed("Matrix")
+  m <- Matrix::Matrix(matrix(c(2,3, 60,40, 1,2, 200,200), nrow = 2), sparse = TRUE)
+  colnames(m) <- c("A","B","C","D"); rownames(m) <- c("g1","g2")  # colSums 5,100,3,400
+  meta <- data.frame(cell = c("A","B","C","D"), model = "M1",
+                     condition = "sensitive", stringsAsFactors = FALSE)
+  res <- suppressMessages(filter_cells_min_umi(m, meta, min_umi = 50))
+  expect_equal(colnames(res$counts), c("B","D"))
+  expect_equal(res$cell_meta$cell, c("B","D"))            # metadata realigned
+  m2 <- suppressMessages(filter_cells_min_umi(m, min_umi = 50))
+  expect_equal(colnames(m2), c("B","D"))                  # no-meta path returns matrix
+  expect_error(filter_cells_min_umi(m, min_umi = 1e6), "No cells pass")
+})
