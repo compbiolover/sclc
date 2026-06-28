@@ -113,6 +113,14 @@
 #' score is epithelial-high; it is mean-centered and **negated** here so that
 #' higher = more mesenchymal, matching the rest of this module.
 #'
+#' CAVEAT: 76GS assumes CDH1 tracks epithelial identity. In tumors where CDH1 is
+#' uninformative (e.g. neuroendocrine SCLC, which is uniformly CDH1-low) the
+#' weights become noise and the score is unreliable -- empirically it can even
+#' point the wrong way (fails to track mesenchymal markers). [compute_emt_scores()]
+#' guards against this by excluding from the consensus any method that does not
+#' correlate with canonical mesenchymal markers; [cdh1_informativeness()] is a
+#' complementary diagnostic for why 76GS may fail.
+#'
 #' @param expr Numeric expression matrix (log-scale recommended).
 #' @param genes_76gs Character vector of the 76GS genes.
 #' @param cdh1_gene Symbol used for E-cadherin. Default "CDH1".
@@ -384,12 +392,29 @@ load_emt_signatures <- function(dir = "Data/emt_signatures") {
 #'   By default runs every method whose gene set is available.
 #' @param genes_are_rows Whether genes are in rows. Default TRUE.
 #' @param hallmark_method Passed to [score_hallmark_emt()]. Default "gsva".
+#' @param drop_invalid_methods If TRUE (default), exclude from the *consensus*
+#'   any method whose scores do not positively correlate with canonical
+#'   mesenchymal markers (`mes_markers`), since every scorer is oriented
+#'   mesenchymal-high. This catches, e.g., 76GS in neuroendocrine SCLC, where
+#'   its CDH1 anchor is uninformative so it fails to track the mesenchymal axis.
+#'   Offending method columns are still returned; only their consensus
+#'   contribution is removed. Never drops all methods.
+#' @param min_marker_cor Minimum Spearman correlation with the mesenchymal
+#'   marker panel for a method to enter the consensus. Default 0.3. (Empirically,
+#'   across two SCLC cohorts -- George 2015 and GSE60052 -- the valid methods KS
+#'   and Hallmark correlate 0.64-0.83 with mesenchymal markers while the invalid
+#'   76GS sits at 0.07-0.26; 0.3 separates them with margin.)
+#' @param mes_markers Canonical mesenchymal markers used for the validity check.
 #' @return A tibble: `sample`, one column per method, `consensus`, `emt_state`.
+#'   Methods feeding the consensus are listed in `attr(., "consensus_methods")`.
 #' @export
 compute_emt_scores <- function(expr, signatures = load_emt_signatures(),
                                methods = c("76gs", "ks", "hallmark", "mlr"),
                                genes_are_rows = TRUE,
-                               hallmark_method = "gsva") {
+                               hallmark_method = "gsva",
+                               drop_invalid_methods = TRUE, min_marker_cor = 0.3,
+                               mes_markers = c("VIM", "FN1", "CDH2", "ZEB1",
+                                               "ZEB2", "SNAI2")) {
   expr <- .as_gene_matrix(expr, genes_are_rows)
   samples <- colnames(expr)
   out <- list(sample = samples)
@@ -422,7 +447,44 @@ compute_emt_scores <- function(expr, signatures = load_emt_signatures(),
   }
   df <- as.data.frame(out, stringsAsFactors = FALSE, check.names = FALSE)
 
-  norm <- vapply(method_cols, function(m) .rank01(df[[m]]), numeric(nrow(df)))
+  # Decide which methods feed the consensus. A consensus method must actually
+  # track canonical mesenchymal markers (each scorer is oriented mesenchymal-
+  # high); a method that does not is measuring something else and is excluded.
+  # This catches, e.g., 76GS in neuroendocrine SCLC, where its CDH1 anchor is
+  # uninformative so it fails to track the mesenchymal axis. All method columns
+  # are still returned -- only the consensus excludes the offending method(s).
+  consensus_cols <- method_cols
+  if (drop_invalid_methods && length(method_cols) >= 2) {
+    mp <- intersect(mes_markers, rownames(expr))
+    if (length(mp) < 2) {
+      cli::cli_warn(c(
+        "!" = "Skipping the consensus validity check: only {length(mp)} of the mesenchymal markers were found in the matrix (need >= 2).",
+        "i" = "All {length(method_cols)} methods are kept in the consensus unchecked. Supply matching {.arg mes_markers} (gene symbols) to enable the guard."
+      ))
+    } else {
+      panel <- colMeans(expr[mp, , drop = FALSE], na.rm = TRUE)
+      validity <- vapply(method_cols, function(m) suppressWarnings(
+        stats::cor(df[[m]], panel[df$sample], method = "spearman",
+                   use = "pairwise.complete.obs")), numeric(1))
+      # Non-finite validity (e.g. a constant method score -> cor() = NA) is
+      # treated as invalid: such a method tracks nothing and must not silently
+      # remain in the consensus.
+      invalid <- names(validity)[!is.finite(validity) | validity < min_marker_cor]
+      if (length(invalid) > 0 && length(invalid) < length(method_cols)) {
+        msg <- c("!" = "Excluding from the EMT consensus (weak correlation with mesenchymal markers): {paste(sprintf('%s (rho=%.2f)', invalid, validity[invalid]), collapse=', ')}.",
+                 "i" = "These columns are kept in the output for transparency.")
+        if ("76gs" %in% invalid) {
+          msg <- c(msg, "i" = "76GS is CDH1-anchored and is expected to fail here in neuroendocrine SCLC.")
+        }
+        cli::cli_warn(msg)
+        consensus_cols <- setdiff(consensus_cols, invalid)
+      } else if (length(invalid) == length(method_cols)) {
+        cli::cli_warn("All EMT methods correlate weakly with mesenchymal markers ({paste(mp, collapse=', ')}); keeping all in the consensus -- check the data and marker set.")
+      }
+    }
+  }
+
+  norm <- vapply(consensus_cols, function(m) .rank01(df[[m]]), numeric(nrow(df)))
   df$consensus <- rowMeans(norm, na.rm = TRUE)
   # Tertile states from the rank of the consensus axis. Cutting the
   # rank-normalized score on FIXED breaks (not data quantiles) keeps cut()
@@ -433,7 +495,48 @@ compute_emt_scores <- function(expr, signatures = load_emt_signatures(),
   if (length(method_cols) == 1) {
     cli::cli_warn("Only one EMT method available ({method_cols}); consensus equals it. Cross-method QC is not meaningful.")
   }
-  .emt_as_tbl(df)
+  result <- .emt_as_tbl(df)
+  attr(result, "consensus_methods") <- consensus_cols
+  result
+}
+
+#' CDH1 informativeness for 76GS validity
+#'
+#' Measures whether CDH1 (E-cadherin) tracks epithelial identity in a dataset,
+#' which is the assumption the 76GS score depends on. Returns the mean Pearson
+#' correlation of CDH1 with epithelial genes minus its mean correlation with
+#' mesenchymal genes. Large positive => CDH1 is a good epithelial anchor (76GS
+#' valid); near zero / negative => CDH1 is uninformative (76GS unreliable), as in
+#' neuroendocrine SCLC where CDH1 is uniformly low.
+#'
+#' @param expr Numeric expression matrix.
+#' @param epithelial_genes,mesenchymal_genes Reference epithelial / mesenchymal
+#'   gene sets (e.g. the KS sets). If empty/NULL a small built-in panel is used.
+#' @param cdh1_gene E-cadherin symbol. Default "CDH1".
+#' @param genes_are_rows Whether genes are in rows. Default TRUE.
+#' @return A single numeric (epithelial-minus-mesenchymal mean CDH1 correlation),
+#'   or NA if CDH1 / too few reference genes are present.
+#' @export
+cdh1_informativeness <- function(expr, epithelial_genes = NULL,
+                                 mesenchymal_genes = NULL, cdh1_gene = "CDH1",
+                                 genes_are_rows = TRUE) {
+  expr <- .as_gene_matrix(expr, genes_are_rows)
+  if (!cdh1_gene %in% rownames(expr)) return(NA_real_)
+  if (is.null(epithelial_genes) || length(epithelial_genes) == 0) {
+    epithelial_genes <- c("EPCAM", "CLDN4", "CLDN7", "CDH1")
+  }
+  if (is.null(mesenchymal_genes) || length(mesenchymal_genes) == 0) {
+    mesenchymal_genes <- c("VIM", "ZEB1", "FN1", "CDH2")
+  }
+  epi <- intersect(setdiff(epithelial_genes, cdh1_gene), rownames(expr))
+  mes <- intersect(mesenchymal_genes, rownames(expr))
+  if (length(epi) < 2 || length(mes) < 2) return(NA_real_)
+  cdh1 <- expr[cdh1_gene, ]
+  cc <- function(g) suppressWarnings(stats::cor(g, cdh1, use = "pairwise.complete.obs"))
+  ce <- mean(apply(expr[epi, , drop = FALSE], 1, cc), na.rm = TRUE)
+  cm <- mean(apply(expr[mes, , drop = FALSE], 1, cc), na.rm = TRUE)
+  out <- ce - cm
+  if (!is.finite(out)) NA_real_ else out   # all-NA correlations -> NA, not NaN
 }
 
 #' Cross-method concordance (Spearman) -- WS1 QC positive control

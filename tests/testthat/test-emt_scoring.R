@@ -43,6 +43,67 @@ test_that("score_76gs tolerates a few missing values (no NA poisoning)", {
   expect_gt(s[["s6"]], s[["s1"]])  # orientation preserved
 })
 
+# Larger matrix (n=40) where CDH1 is deterministically DECOUPLED from the E/M
+# gradient (alternating pattern), mimicking neuroendocrine SCLC where CDH1 does
+# not track epithelial state.
+make_uninformative_cdh1 <- function(n = 40) {
+  epi <- c("CDH1", "EPCAM", "CLDN4", "CLDN7"); mes <- c("VIM", "ZEB1", "FN1", "CDH2")
+  set.seed(13); lvl <- seq(0, 1, length.out = n)
+  e <- t(sapply(epi, function(g) (1 - lvl) * 5 + stats::rnorm(n, 0, 0.05)))  # epithelial down
+  m <- t(sapply(mes, function(g) lvl * 5 + stats::rnorm(n, 0, 0.05)))        # mesenchymal up
+  expr <- rbind(e, m); colnames(expr) <- paste0("c", seq_len(n))
+  expr["CDH1", ] <- rep_len(c(-1, 1), n)                                     # decouple CDH1
+  list(expr = expr, epi = epi, mes = mes, all = c(epi, mes))
+}
+
+test_that("cdh1_informativeness detects when CDH1 tracks epithelial state", {
+  d <- make_gradient()
+  expect_gt(cdh1_informativeness(d$expr, d$epi, d$mes), 0.5)   # CDH1 covaries w/ epithelial
+  u <- make_uninformative_cdh1()
+  expect_lt(cdh1_informativeness(u$expr, u$epi, u$mes), 0.2)   # CDH1 decoupled
+  # constant CDH1 -> all correlations NA -> returns NA (not NaN), per docs
+  d2 <- make_gradient(); d2$expr["CDH1", ] <- 5
+  expect_true(is.na(cdh1_informativeness(d2$expr, d2$epi, d2$mes)))
+})
+
+test_that("consensus guard drops a constant (NA-correlation) method", {
+  d <- make_gradient()
+  sigs <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes,
+               hallmark = NULL, mlr = NULL)
+  bad <- d$expr; bad["CDH1", ] <- 5          # constant CDH1 -> 76GS becomes all-zero -> cor NA
+  res <- suppressWarnings(compute_emt_scores(bad, signatures = sigs, methods = c("76gs", "ks")))
+  expect_false("76gs" %in% attr(res, "consensus_methods"))   # NA validity treated as invalid
+  expect_true("ks" %in% attr(res, "consensus_methods"))
+})
+
+test_that("compute_emt_scores drops a method that fails to track mesenchymal markers (76GS in SCLC-like data)", {
+  u <- make_uninformative_cdh1()
+  sigs <- list(gs_76 = u$all, ks_epithelial = u$epi, ks_mesenchymal = u$mes,
+               hallmark = NULL, mlr = NULL)
+  res <- expect_warning(
+    compute_emt_scores(u$expr, signatures = sigs, methods = c("76gs", "ks")),
+    "mesenchymal markers")
+  expect_true("76gs" %in% names(res))                            # column kept for transparency
+  expect_false("76gs" %in% attr(res, "consensus_methods"))       # but excluded from consensus
+  # informative CDH1 -> 76GS retained in the consensus
+  d <- make_gradient()
+  sigs2 <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes,
+                hallmark = NULL, mlr = NULL)
+  res2 <- compute_emt_scores(d$expr, signatures = sigs2, methods = c("76gs", "ks"))
+  expect_true("76gs" %in% attr(res2, "consensus_methods"))
+})
+
+test_that("consensus guard warns and skips when too few mesenchymal markers present", {
+  d <- make_gradient()
+  sigs <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes,
+               hallmark = NULL, mlr = NULL)
+  res <- expect_warning(
+    compute_emt_scores(d$expr, signatures = sigs, methods = c("76gs", "ks"),
+                       mes_markers = c("NOPE1", "NOPE2")),
+    "Skipping the consensus validity check")
+  expect_setequal(attr(res, "consensus_methods"), c("76gs", "ks"))  # nothing dropped
+})
+
 test_that("score_ks is in [-1, 1] and oriented mesenchymal-high", {
   d <- make_gradient()
   s <- score_ks(d$expr, epithelial_genes = d$epi, mesenchymal_genes = d$mes)
