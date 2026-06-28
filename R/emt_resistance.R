@@ -380,12 +380,7 @@ emt_heterogeneity_shift <- function(prepared,
   dispersion <- match.arg(dispersion)
   alternative <- match.arg(alternative)
   .er_check_prepared(prepared)
-  disp_fun <- switch(dispersion,
-    sd  = function(z) stats::sd(z),
-    var = function(z) stats::var(z),
-    iqr = function(z) stats::IQR(z),
-    mad = function(z) stats::mad(z)
-  )
+  disp_fun <- .er_disp_fun(dispersion)
   agg <- .er_aggregate(prepared, function(z) {
     z <- z[is.finite(z)]
     if (length(z) < 2) return(NA_real_)
@@ -393,6 +388,136 @@ emt_heterogeneity_shift <- function(prepared,
   })
   .er_paired_test(agg, value_name = dispersion, min_models = min_models,
                   alternative = alternative)
+}
+
+#' Dispersion function by name (sd / var / iqr / mad)
+#' @keywords internal
+.er_disp_fun <- function(dispersion) {
+  switch(dispersion,
+    sd  = function(z) stats::sd(z),
+    var = function(z) stats::var(z),
+    iqr = function(z) stats::IQR(z),
+    mad = function(z) stats::mad(z)
+  )
+}
+
+#' Per-model dispersion deltas (resistant - sensitive), paired models only
+#' @keywords internal
+.er_model_dispersion_deltas <- function(prepared, disp_fun) {
+  ag <- stats::aggregate(emt ~ model + condition, data = prepared, FUN = function(z) {
+    z <- z[is.finite(z)]; if (length(z) < 2) NA_real_ else disp_fun(z)
+  })
+  ag$condition <- as.character(ag$condition)
+  s <- ag[ag$condition == "sensitive", c("model", "emt")]
+  r <- ag[ag$condition == "resistant", c("model", "emt")]
+  m <- merge(s, r, by = "model", suffixes = c("_s", "_r"))
+  m <- m[is.finite(m$emt_s) & is.finite(m$emt_r), , drop = FALSE]
+  stats::setNames(m$emt_r - m$emt_s, m$model)
+}
+
+# ============================================================================
+# 3b. ROBUSTNESS: is the dispersion shift real, or a cell-count artifact?
+# ============================================================================
+
+#' Permutation null for the EMT dispersion shift
+#'
+#' Asks whether the observed widening of per-cell EMT under resistance exceeds
+#' what random relabeling of the same cells produces. Within EACH model the
+#' sensitive/resistant labels are shuffled (group sizes preserved, so this also
+#' controls for the unequal cell counts between conditions), the per-model
+#' dispersion deltas are recomputed, and two aggregate statistics are compared
+#' to their null: the MEAN per-model delta and the NUMBER of models with a
+#' positive delta (sign-consistency).
+#'
+#' @param prepared Output of [prepare_resistance_emt()].
+#' @param dispersion "sd" (default), "var", "iqr", or "mad".
+#' @param n_perm Number of permutations. Default 1000.
+#' @param seed RNG seed (results are otherwise non-reproducible). Default 1.
+#' @return A list: `observed` (mean_delta, n_pos, n_models, per_model deltas),
+#'   `p_mean` and `p_pos` (one-sided empirical p-values, `(1+#ge)/(1+n_perm)`),
+#'   `dispersion`, `n_perm`.
+#' @export
+emt_dispersion_permutation <- function(prepared,
+                                       dispersion = c("sd", "var", "iqr", "mad"),
+                                       n_perm = 1000, seed = 1) {
+  dispersion <- match.arg(dispersion)
+  .er_check_prepared(prepared)
+  disp_fun <- .er_disp_fun(dispersion)
+  obs <- .er_model_dispersion_deltas(prepared, disp_fun)
+  if (length(obs) < 2) {
+    cli::cli_abort("Need >= 2 paired models for a permutation test; found {length(obs)}.")
+  }
+  obs_mean <- mean(obs); obs_pos <- sum(obs > 0); n_models <- length(obs)
+  models <- unique(prepared$model)
+  idx_by_model <- lapply(models, function(m) which(prepared$model == m))
+  cond <- prepared$condition
+  set.seed(seed)
+  perm_mean <- numeric(n_perm); perm_pos <- integer(n_perm)
+  for (p in seq_len(n_perm)) {
+    pp <- prepared
+    cc <- cond
+    for (ix in idx_by_model) cc[ix] <- sample(cc[ix])   # shuffle labels within model
+    pp$condition <- cc
+    d <- .er_model_dispersion_deltas(pp, disp_fun)
+    perm_mean[p] <- mean(d); perm_pos[p] <- sum(d > 0)
+  }
+  list(
+    observed = list(mean_delta = obs_mean, n_pos = obs_pos, n_models = n_models,
+                    per_model = obs),
+    p_mean = (1 + sum(perm_mean >= obs_mean)) / (1 + n_perm),
+    p_pos  = (1 + sum(perm_pos  >= obs_pos )) / (1 + n_perm),
+    dispersion = dispersion, n_perm = n_perm
+  )
+}
+
+#' Equal-n downsampling stability for the EMT dispersion shift
+#'
+#' Recomputes the per-model dispersion deltas on repeated subsamples that take
+#' the SAME number of cells from every model x condition group, removing the
+#' cell-count imbalance as an explanation. Reports how often all models still go
+#' up and the mean delta across repeats.
+#'
+#' @param prepared Output of [prepare_resistance_emt()].
+#' @param dispersion "sd" (default), "var", "iqr", or "mad".
+#' @param n_cells Cells to sample per group. Default: the smallest group size.
+#' @param n_rep Number of subsample repeats. Default 200.
+#' @param seed RNG seed. Default 1.
+#' @return A list: `n_cells`, `n_models`, `mean_delta` (averaged over repeats),
+#'   `frac_all_up` (fraction of repeats where every model's delta > 0),
+#'   `mean_n_up` (average count of up models), `dispersion`, `n_rep`.
+#' @export
+emt_dispersion_downsample <- function(prepared,
+                                      dispersion = c("sd", "var", "iqr", "mad"),
+                                      n_cells = NULL, n_rep = 200, seed = 1) {
+  dispersion <- match.arg(dispersion)
+  .er_check_prepared(prepared)
+  disp_fun <- .er_disp_fun(dispersion)
+  tab <- table(prepared$model, prepared$condition)
+  paired_models <- rownames(tab)[tab[, "sensitive"] > 0 & tab[, "resistant"] > 0]
+  if (length(paired_models) < 2) {
+    cli::cli_abort("Need >= 2 paired models for downsampling; found {length(paired_models)}.")
+  }
+  sub <- prepared[prepared$model %in% paired_models, , drop = FALSE]
+  min_grp <- min(tab[paired_models, c("sensitive", "resistant")])
+  if (is.null(n_cells)) n_cells <- min_grp
+  if (n_cells > min_grp) {
+    cli::cli_abort("{.arg n_cells} ({n_cells}) exceeds the smallest group ({min_grp}); sampling is without replacement.")
+  }
+  key <- paste(sub$model, sub$condition, sep = "\r")
+  rows_by_grp <- split(seq_len(nrow(sub)), key)
+  set.seed(seed)
+  rep_mean <- numeric(n_rep); rep_up <- integer(n_rep)
+  for (i in seq_len(n_rep)) {
+    take <- unlist(lapply(rows_by_grp, function(r) sample(r, n_cells)), use.names = FALSE)
+    d <- .er_model_dispersion_deltas(sub[take, , drop = FALSE], disp_fun)
+    rep_mean[i] <- mean(d); rep_up[i] <- sum(d > 0)
+  }
+  list(
+    n_cells = n_cells, n_models = length(paired_models),
+    mean_delta = mean(rep_mean),
+    frac_all_up = mean(rep_up == length(paired_models)),
+    mean_n_up = mean(rep_up), dispersion = dispersion, n_rep = n_rep
+  )
 }
 
 # ============================================================================

@@ -184,6 +184,37 @@ test_that("emt_state_composition detects the rise in mesenchymal-cell fraction",
   expect_false(is.null(attr(res$test, "threshold")))
 })
 
+test_that("emt_dispersion_permutation flags a real dispersion shift, not a null one", {
+  inp <- as_inputs(make_cdx_data())                      # resistant sd 1.7 > sens 1.0
+  prepared <- prepare_resistance_emt(inp$emt, inp$meta)
+  res <- emt_dispersion_permutation(prepared, dispersion = "sd", n_perm = 200, seed = 1)
+  expect_equal(res$observed$n_pos, 6)                    # all 6 models widen
+  expect_lt(res$p_pos, 0.05)
+  expect_lt(res$p_mean, 0.05)
+  # reproducible under a fixed seed
+  res2 <- emt_dispersion_permutation(prepared, dispersion = "sd", n_perm = 200, seed = 1)
+  expect_equal(res$p_mean, res2$p_mean)
+
+  # null: equal dispersion (and no location shift) -> not significant
+  null_inp <- as_inputs(make_cdx_data(loc = 0, sd_sens = 1, sd_res = 1, seed = 3))
+  null_prep <- prepare_resistance_emt(null_inp$emt, null_inp$meta)
+  null_res <- emt_dispersion_permutation(null_prep, dispersion = "sd", n_perm = 200, seed = 1)
+  expect_gt(null_res$p_mean, 0.05)
+})
+
+test_that("emt_dispersion_downsample holds under equal-n subsampling", {
+  inp <- as_inputs(make_cdx_data())
+  prepared <- prepare_resistance_emt(inp$emt, inp$meta)
+  res <- emt_dispersion_downsample(prepared, dispersion = "sd", n_cells = 30,
+                                   n_rep = 50, seed = 1)
+  expect_equal(res$n_cells, 30)
+  expect_equal(res$n_models, 6)
+  expect_gt(res$frac_all_up, 0.8)                        # widening survives downsampling
+  expect_gt(res$mean_delta, 0)
+  # default n_cells is the smallest group; can't exceed it
+  expect_error(emt_dispersion_downsample(prepared, n_cells = 10^6), "exceeds the smallest")
+})
+
 test_that("emt_state_composition validates threshold and prepared", {
   d <- make_cdx_data()
   inp <- as_inputs(d)
