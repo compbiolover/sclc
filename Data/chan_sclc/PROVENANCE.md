@@ -15,9 +15,17 @@ The expression matrices are **not committed** (large; see `.gitignore`).
 > DOI [10.1016/j.ccell.2021.09.008](https://doi.org/10.1016/j.ccell.2021.09.008).
 > Part of the Human Tumor Atlas Network (HTAN).
 
-scRNA-seq of 155k transcriptomes from 21 human SCLC biospecimens (plus matched
-LUAD/normal in the combined atlas), spanning **treatment-naive and treated**
-tumors — a cross-platform (10x), between-patient contrast to the CDX models.
+scRNA-seq of 155k transcriptomes from human SCLC biospecimens (the paper reports
+21 in its primary cohort; plus matched LUAD/normal in the combined atlas),
+spanning **treatment-naive and treated** tumors — a cross-platform (10x),
+between-patient contrast to the CDX models.
+
+**Note on sample count:** the paper's headline is 21 SCLC biospecimens, but the
+WS4 loader yields **~24 specimens** (by `HTAN_Biospecimen_ID`) after the
+SCLC + tumor-epithelial + ≥1000-UMI filters applied to the combined CELLxGENE
+atlas — the specimen set deposited in HTAN/CELLxGENE is slightly larger than the
+paper's primary cohort, and our unit is the biospecimen passing QC. Both figures
+are correct in their own context; reproduce with the filters in `load_chan_sclc()`.
 
 ## How to obtain (open access)
 

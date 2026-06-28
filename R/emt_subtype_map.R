@@ -240,12 +240,12 @@ ne_score_singlecell <- function(mat, ne_template = load_ne_template(),
     mat <- if (inherits(mat, "Matrix")) Matrix::t(mat) else t(mat)
   }
   if (is.null(rownames(mat))) cli::cli_abort("{.arg mat} must have gene symbols as rownames.")
+  # Ensure the matrix carries cell names so UCell/AUCell output rows line up with
+  # the returned vector.
+  if (is.null(colnames(mat))) colnames(mat) <- paste0("cell_", seq_len(ncol(mat)))
   cells <- colnames(mat)
-  if (is.null(cells)) cells <- paste0("cell_", seq_len(ncol(mat)))
-  present <- function(g, lbl) {
-    p <- intersect(toupper(g), toupper(rownames(mat)))
-    # map back to the matrix's own symbol casing
-    rownames(mat)[toupper(rownames(mat)) %in% p]
+  present <- function(g) {
+    unique(rownames(mat)[toupper(rownames(mat)) %in% toupper(g)])  # matrix casing, deduped
   }
   sigs <- list(NE = present(ne_genes), nonNE = present(nonne_genes))
   if (length(sigs$NE) < 1 || length(sigs$nonNE) < 1) {

@@ -191,18 +191,22 @@ read_10x_triplet <- function(dir, cell_prefix = "", symbol_col = 2) {
   barcodes <- utils::read.delim(pick(c("barcodes\\.tsv", "barcodes\\.txt")),
                                 header = FALSE, stringsAsFactors = FALSE)[[1]]
   ng <- nrow(genes); nc <- length(barcodes)
-  # Open a fresh (possibly gzip) connection each time -- readMM()/scan() do not
-  # transparently decompress a ".gz" *path*, so a connection is required.
+  # readMM()/scan() don't transparently decompress a ".gz" *path*, so for gzipped
+  # input we pass an explicitly-OPENED gzfile connection and close it via on.exit
+  # (opening it ourselves means readMM/scan won't also try to close it -- no
+  # double-close, no leaked connection across many samples). Plain paths need no
+  # connection. The header probe uses its own short-lived connection.
   gz <- grepl("\\.gz$", mfile)
-  mcon <- function() if (gz) gzfile(mfile) else mfile
-  # Detect MatrixMarket vs dense table from the first non-comment line.
   con <- if (gz) gzfile(mfile) else file(mfile)
   first <- readLines(con, n = 1); close(con)
+  mtarget <- if (gz) {
+    rc <- gzfile(mfile, open = "r"); on.exit(close(rc), add = TRUE); rc
+  } else mfile
   if (grepl("^%%MatrixMarket", first)) {
-    m <- methods::as(Matrix::readMM(mcon()), "CsparseMatrix")
+    m <- methods::as(Matrix::readMM(mtarget), "CsparseMatrix")
   } else {
     # Dense genes x cells table: scan row-major (fast, C-level), then reshape.
-    vals <- scan(mcon(), what = integer(), quiet = TRUE, sep = "\t")
+    vals <- scan(mtarget, what = integer(), quiet = TRUE, sep = "\t")
     if (length(vals) != ng * nc) {
       cli::cli_abort(c("x" = "Dense matrix has {length(vals)} values, expected {ng}x{nc}={ng*nc}.",
                        "i" = "Check {.path {mfile}} against the genes/barcodes files."))

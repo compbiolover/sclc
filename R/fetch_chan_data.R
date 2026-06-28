@@ -92,9 +92,10 @@ chan_treatment_group <- function(treatment, naive_label = "Naive") {
 #' @param file Path to the .h5ad.
 #' @param keep_cells Integer positions of cells to keep (default: all).
 #' @param layer "raw" (default; raw/X counts) or "X" (the main, normalized X).
-#' @param symbol_path obs-relative path to gene symbols. Default "var/feature_name".
+#' @param symbol_path h5ad path to the gene-symbol vector (a `var/...` column).
+#'   Default "var/feature_name".
 #' @return A sparse `dgCMatrix`, genes (symbols) in rows, kept cells in columns
-#'   (column names from `obs/_index`).
+#'   (column names resolved from the `/obs` `_index` attribute).
 #' @export
 read_h5ad_counts <- function(file, keep_cells = NULL, layer = c("raw", "X"),
                              symbol_path = "var/feature_name") {
@@ -110,6 +111,7 @@ read_h5ad_counts <- function(file, keep_cells = NULL, layer = c("raw", "X"),
   if (is.null(keep_cells)) keep_cells <- seq_len(ncells)
   keep_cells <- as.integer(keep_cells)
   if (any(keep_cells < 1 | keep_cells > ncells)) cli::cli_abort("{.arg keep_cells} out of range.")
+  if (anyDuplicated(keep_cells)) cli::cli_abort("{.arg keep_cells} must be unique (duplicates would yield duplicated columns/cell ids).")
 
   # as.double/as.integer also strip the 1-D array attribute h5read() returns,
   # which sparseMatrix() rejects for `x`.
@@ -143,7 +145,9 @@ read_h5ad_counts <- function(file, keep_cells = NULL, layer = c("raw", "X"),
 #' applies a minimum-UMI QC consistent with the CDX analysis.
 #'
 #' @param file Path to the Chan combined .h5ad.
-#' @param min_umi Minimum library size (`obs/libsize`) per cell. Default 1000.
+#' @param min_umi Minimum per-cell total counts to keep. Depth is recomputed from
+#'   `raw/X` (`Matrix::colSums`), not read from `obs/libsize` (which is log10-
+#'   scaled), so this matches the CDX pipeline's threshold. Default 1000.
 #' @param disease_value obs `disease` value selecting SCLC. Default
 #'   "small cell lung carcinoma".
 #' @param epithelial_value obs `cell_type_general` value selecting tumor cells.
