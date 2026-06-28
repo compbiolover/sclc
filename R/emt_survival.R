@@ -92,7 +92,25 @@ prepare_survival <- function(emt_scores, clinical, sample_col = "sample",
   cl$.time <- suppressWarnings(as.numeric(cl$.time))
   cl$.event <- .sv_parse_event(cl$.event)
 
+  # Guard against duplicate IDs (a many-to-many merge would silently explode
+  # rows and corrupt the downstream Cox/KM fits).
+  dup_e <- unique(e$sample[duplicated(e$sample)])
+  dup_c <- unique(cl$sample[duplicated(cl$sample)])
+  if (length(dup_e) > 0) {
+    cli::cli_abort(c("x" = "Duplicate sample IDs in {.arg emt_scores}: {dup_e}.",
+                     "i" = "Sample IDs must be unique."))
+  }
+  if (length(dup_c) > 0) {
+    cli::cli_abort(c("x" = "Duplicate sample IDs in {.arg clinical} ({sample_col} column): {dup_c}.",
+                     "i" = "Sample IDs must be unique."))
+  }
   df <- merge(e, cl, by = "sample")
+  if (nrow(df) == 0) {
+    cli::cli_abort(c(
+      "x" = "No overlapping sample IDs between {.arg emt_scores} and {.arg clinical}.",
+      "i" = "Check the ID formats match (e.g. emt '{e$sample[1]}' vs clinical '{cl$sample[1]}')."
+    ))
+  }
   ok <- is.finite(df$.time) & df$.time >= 0 & !is.na(df$.event)
   dropped <- sum(!ok)
   if (dropped > 0) cli::cli_warn("Dropping {dropped} sample(s) with missing/invalid time or event.")

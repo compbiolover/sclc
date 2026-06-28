@@ -78,6 +78,16 @@ test_that("prepare_survival joins and parses event/time", {
                "Missing clinical column")
 })
 
+test_that("prepare_survival guards against duplicate IDs and zero overlap", {
+  d <- make_surv()
+  dup <- d$emt; dup <- rbind(dup, dup[1, ])               # duplicate a sample id
+  expect_error(prepare_survival(dup, d$clin, time_col = "os_time", event_col = "os_status"),
+               "Duplicate sample IDs")
+  nomatch <- d$clin; nomatch$sample <- paste0("X", nomatch$sample)  # no overlap
+  expect_error(prepare_survival(d$emt, nomatch, time_col = "os_time", event_col = "os_status"),
+               "No overlapping sample IDs")
+})
+
 test_that("emt_cox recovers the positive EMT-hazard association (HR>1)", {
   d <- make_surv()
   s <- prepare_survival(d$emt, d$clin, time_col = "os_time", event_col = "os_status")
