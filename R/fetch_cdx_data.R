@@ -61,13 +61,16 @@
 #'   title does not start with an `SC<number>` stem.
 #' @export
 cdx_base_model <- function(title) {
-  m <- regmatches(title, regexpr("^SC[0-9]+", title))
-  if (length(m) != length(title)) {
-    bad <- title[regexpr("^SC[0-9]+", title) < 0]
-    cli::cli_abort(c("x" = "{length(bad)} title(s) lack an SC<number> stem: {.val {bad}}.",
+  # Check the regexpr() match position directly (-1 / NA = no match) so a bad
+  # title can't slip through; regmatches() silently DROPS non-matches, which
+  # would otherwise misalign the result with `title`.
+  pos <- regexpr("^SC[0-9]+", title)
+  bad <- is.na(pos) | pos < 0
+  if (any(bad)) {
+    cli::cli_abort(c("x" = "{sum(bad)} title(s) lack an SC<number> stem: {.val {title[bad]}}.",
                      "i" = "Expected titles like {.val SC4.LB17009} or {.val SC53cis}."))
   }
-  m
+  regmatches(title, pos)
 }
 
 #' Map a CDX `treatment` characteristic to a sensitive/resistant condition
