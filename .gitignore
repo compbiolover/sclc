@@ -2,6 +2,11 @@
 Data/mirna_data/*.txt
 Data/mirna_data/*.csv
 
+# CDX single-cell RNA-seq matrices (download separately; see
+# Data/cdx_scrnaseq/PROVENANCE.md). Keep the provenance doc, drop the big data.
+Data/cdx_scrnaseq/*
+!Data/cdx_scrnaseq/PROVENANCE.md
+
 # R session files
 .Rhistory
 .RData
