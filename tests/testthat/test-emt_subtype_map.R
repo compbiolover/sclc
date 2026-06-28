@@ -65,6 +65,22 @@ test_that("ne_score requires a template and is oriented NE-high", {
   expect_gt(s[["NE_like"]], 0)
 })
 
+test_that("vendored Zhang NE template loads and scores correctly", {
+  ne_path <- testthat::test_path("..", "..", "Data", "sclc_signatures", "zhang_ne_50.tsv")
+  skip_if(!file.exists(ne_path), "zhang_ne_50.tsv not vendored")
+  tmpl <- load_ne_template(ne_path)
+  expect_equal(nrow(tmpl), 50)
+  expect_true(all(c("gene", "ne_ref", "nonne_ref") %in% names(tmpl)))
+  # a sample matching the NE reference scores higher than one matching non-NE
+  set.seed(9)
+  expr <- cbind(NE = tmpl$ne_ref + stats::rnorm(50, 0, 0.2),
+                NON = tmpl$nonne_ref + stats::rnorm(50, 0, 0.2))
+  rownames(expr) <- tmpl$gene
+  s <- ne_score(expr, ne_template = tmpl)
+  expect_gt(s[["NE"]], s[["NON"]])
+  expect_gt(s[["NE"]], 0); expect_lt(s[["NON"]], 0)
+})
+
 test_that("map_emt_to_subtype joins and summarizes by subtype", {
   m <- make_subtype_matrix()
   subt <- suppressWarnings(call_sclc_subtype(m))
