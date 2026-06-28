@@ -24,8 +24,9 @@
 #'
 #' @param out_dir Destination directory. Default "Data/emt_signatures".
 #' @param ks_variant "tumor" (default; for patient cohorts) or "cellLine"
-#'   (for cell-line panels). Both are downloaded; this selects which becomes
-#'   the default `tan_ks_*.tsv` read by [load_emt_signatures()].
+#'   (for cell-line panels). Only the selected variant is downloaded and written
+#'   to `tan_ks_*.tsv` (the files [load_emt_signatures()] reads); re-run with the
+#'   other value to switch.
 #' @param branch Git branch of the source repo. Default "master".
 #' @return (Invisibly) a named list of the gene sets written.
 #' @export
@@ -45,8 +46,21 @@ fetch_emt_signatures <- function(out_dir = "Data/emt_signatures",
   tmp <- tempfile("emt_sig_"); dir.create(tmp)
   on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
 
+  # Join URL parts with "/" -- NEVER file.path(), whose separator is OS-specific
+  # (backslashes on Windows would corrupt the URL).
+  url_join <- function(...) paste(c(...), collapse = "/")
+
   dl <- function(url, dest) {
-    utils::download.file(url, dest, mode = "wb", quiet = TRUE)
+    status <- tryCatch(
+      utils::download.file(url, dest, mode = "wb", quiet = TRUE),
+      error = function(e) stop(sprintf("Download failed for %s: %s",
+                                       url, conditionMessage(e)), call. = FALSE)
+    )
+    if (!identical(as.integer(status), 0L) || !file.exists(dest) ||
+        file.size(dest) == 0) {
+      stop(sprintf("Download failed (status %s, empty/missing file) for %s",
+                   status, url), call. = FALSE)
+    }
     dest
   }
   write_genes <- function(genes, file) {
@@ -60,7 +74,7 @@ fetch_emt_signatures <- function(out_dir = "Data/emt_signatures",
   result <- list()
 
   # ---- 76GS (Byers 2013): genes in column 2, with header ------------------
-  f76 <- dl(file.path(base, "76GS", "EMT_signature_76GS.xlsx"),
+  f76 <- dl(url_join(base, "76GS", "EMT_signature_76GS.xlsx"),
             file.path(tmp, "76gs.xlsx"))
   x76 <- as.data.frame(readxl::read_excel(f76, col_names = TRUE))
   genes76 <- x76[[2]]
@@ -68,7 +82,7 @@ fetch_emt_signatures <- function(out_dir = "Data/emt_signatures",
 
   # ---- KS (Tan 2014): col1 gene, col2 category (Epi/Mes), no header -------
   ks_file <- sprintf("EM_gene_signature_%s_KS.xlsx", ks_variant)
-  fks <- dl(file.path(base, "KS", ks_file), file.path(tmp, "ks.xlsx"))
+  fks <- dl(url_join(base, "KS", ks_file), file.path(tmp, "ks.xlsx"))
   xks <- as.data.frame(readxl::read_excel(fks, col_names = FALSE))
   cat_col <- tolower(trimws(as.character(xks[[2]])))
   epi <- xks[[1]][grepl("^epi", cat_col)]
@@ -77,7 +91,7 @@ fetch_emt_signatures <- function(out_dir = "Data/emt_signatures",
   result$ks_mesenchymal <- write_genes(mes, "tan_ks_mesenchymal.tsv")
 
   # ---- MLR (George 2017): predictor gene list (coefficients NOT included) -
-  fmlr <- dl(file.path(base, "MLR", "genes_for_EMT_score.txt"),
+  fmlr <- dl(url_join(base, "MLR", "genes_for_EMT_score.txt"),
              file.path(tmp, "mlr.txt"))
   mlr_genes <- scan(fmlr, sep = "\n", what = "vector", quiet = TRUE)
   mlr_genes <- unique(trimws(mlr_genes)); mlr_genes <- mlr_genes[mlr_genes != ""]

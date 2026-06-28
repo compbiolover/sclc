@@ -231,8 +231,9 @@ score_hallmark_emt <- function(expr, hallmark_genes,
 #' @param expr Numeric expression matrix.
 #' @param mlr_model A data.frame with columns: `gene`, `role`
 #'   ("predictor"/"normalizer"), and one coefficient column per non-reference
-#'   class (e.g. `coef_hybrid`, `coef_M`), plus an `intercept` attribute or a
-#'   row with role == "intercept".
+#'   class (e.g. `coef_hybrid`, `coef_M`). Per-class intercepts may be supplied
+#'   as an optional row with `role == "intercept"`; if that row is absent,
+#'   intercepts default to 0.
 #' @param genes_are_rows Whether genes are in rows. Default TRUE.
 #' @return Named numeric vector in [0, 2]; higher = more mesenchymal.
 #' @export
@@ -302,8 +303,8 @@ score_emt_singlecell <- function(mat, epithelial_genes, mesenchymal_genes,
   cells <- colnames(mat)
   if (is.null(cells)) cells <- paste0("cell_", seq_len(ncol(mat)))
   sigs <- list(
-    EMT_epithelial  = intersect(epithelial_genes, rownames(mat)),
-    EMT_mesenchymal = intersect(mesenchymal_genes, rownames(mat))
+    EMT_epithelial  = .match_genes(epithelial_genes, mat, "single-cell epithelial", min_genes = 1),
+    EMT_mesenchymal = .match_genes(mesenchymal_genes, mat, "single-cell mesenchymal", min_genes = 1)
   )
   if (method == "UCell") {
     .emt_require_pkg("UCell", bioc = TRUE)
@@ -414,8 +415,11 @@ compute_emt_scores <- function(expr, signatures = load_emt_signatures(),
 
   norm <- vapply(method_cols, function(m) .rank01(df[[m]]), numeric(nrow(df)))
   df$consensus <- rowMeans(norm, na.rm = TRUE)
-  df$emt_state <- cut(df$consensus, breaks = stats::quantile(df$consensus,
-                      c(0, 1/3, 2/3, 1), na.rm = TRUE),
+  # Tertile states from the rank of the consensus axis. Cutting the
+  # rank-normalized score on FIXED breaks (not data quantiles) keeps cut()
+  # valid even when consensus is constant or has few distinct values, where
+  # quantile() breaks would collide and error.
+  df$emt_state <- cut(.rank01(df$consensus), breaks = c(0, 1/3, 2/3, 1),
                       labels = c("E", "hybrid", "M"), include.lowest = TRUE)
   if (length(method_cols) == 1) {
     cli::cli_warn("Only one EMT method available ({method_cols}); consensus equals it. Cross-method QC is not meaningful.")
