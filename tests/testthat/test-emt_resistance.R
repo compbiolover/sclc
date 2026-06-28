@@ -77,6 +77,16 @@ test_that(".er_parse_condition errors on unparseable values and half-specified l
   )
 })
 
+test_that(".er_parse_condition keeps NA conditions missing (all branches)", {
+  # `%in%` returns FALSE for NA, so explicit-label parsing leaves NA as NA
+  # (not silently coerced to a state) -- it is dropped later by prepare_*.
+  expl <- .er_parse_condition(c("base", "drug", NA),
+                              sensitive = "base", resistant = "drug")
+  expect_equal(as.character(expl), c("sensitive", "resistant", NA))
+  kw <- .er_parse_condition(c("untreated", NA, "relapsed"))
+  expect_equal(as.character(kw), c("sensitive", NA, "resistant"))
+})
+
 # ---- prepare ---------------------------------------------------------------
 
 test_that("prepare_resistance_emt assembles a tidy paired frame", {

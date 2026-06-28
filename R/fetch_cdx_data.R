@@ -173,27 +173,33 @@ cdx_sample_table <- function(gse = "GSE138267", destdir = tempdir()) {
 #' @export
 read_10x_triplet <- function(dir, cell_prefix = "", symbol_col = 2) {
   .cdx_require("Matrix", bioc = FALSE)
-  pick <- function(stems) {
-    for (s in stems) {
-      hits <- list.files(dir, pattern = paste0("^", s, "(\\.gz)?$"), full.names = TRUE)
+  # Match by SUFFIX so both bare ("matrix.mtx") and sample-prefixed
+  # ("SC53cis.matrix.mtx") names are found across the series' batches.
+  pick <- function(suffixes) {
+    for (s in suffixes) {
+      hits <- list.files(dir, pattern = paste0(s, "(\\.gz)?$"), full.names = TRUE)
       if (length(hits) > 0) return(hits[1])
     }
-    cli::cli_abort("None of {.val {stems}} found in {.path {dir}}.")
+    cli::cli_abort("No file matching {.val {suffixes}} found in {.path {dir}}.")
   }
-  mfile <- pick(c("matrix.mtx", "matrix.txt"))
-  genes <- utils::read.delim(pick(c("genes.tsv", "genes.txt", "features.tsv")),
+  mfile <- pick(c("matrix\\.mtx", "matrix\\.txt"))
+  genes <- utils::read.delim(pick(c("genes\\.tsv", "genes\\.txt", "features\\.tsv")),
                              header = FALSE, stringsAsFactors = FALSE)
-  barcodes <- utils::read.delim(pick(c("barcodes.tsv", "barcodes.txt")),
+  barcodes <- utils::read.delim(pick(c("barcodes\\.tsv", "barcodes\\.txt")),
                                 header = FALSE, stringsAsFactors = FALSE)[[1]]
   ng <- nrow(genes); nc <- length(barcodes)
+  # Open a fresh (possibly gzip) connection each time -- readMM()/scan() do not
+  # transparently decompress a ".gz" *path*, so a connection is required.
+  gz <- grepl("\\.gz$", mfile)
+  mcon <- function() if (gz) gzfile(mfile) else mfile
   # Detect MatrixMarket vs dense table from the first non-comment line.
-  con <- if (grepl("\\.gz$", mfile)) gzfile(mfile) else file(mfile)
+  con <- if (gz) gzfile(mfile) else file(mfile)
   first <- readLines(con, n = 1); close(con)
   if (grepl("^%%MatrixMarket", first)) {
-    m <- methods::as(Matrix::readMM(mfile), "CsparseMatrix")
+    m <- methods::as(Matrix::readMM(mcon()), "CsparseMatrix")
   } else {
     # Dense genes x cells table: scan row-major (fast, C-level), then reshape.
-    vals <- scan(mfile, what = integer(), quiet = TRUE, sep = "\t")
+    vals <- scan(mcon(), what = integer(), quiet = TRUE, sep = "\t")
     if (length(vals) != ng * nc) {
       cli::cli_abort(c("x" = "Dense matrix has {length(vals)} values, expected {ng}x{nc}={ng*nc}.",
                        "i" = "Check {.path {mfile}} against the genes/barcodes files."))
@@ -243,7 +249,7 @@ read_10x_triplet <- function(dir, cell_prefix = "", symbol_col = 2) {
   utils::untar(tar, exdir = exdir)
   # Some tarballs nest the bundle in a subfolder; find where the matrix landed
   # (LB17 ships matrix.mtx, LB19 ships matrix.txt).
-  mtx <- list.files(exdir, pattern = "^matrix\\.(mtx|txt)(\\.gz)?$",
+  mtx <- list.files(exdir, pattern = "matrix\\.(mtx|txt)(\\.gz)?$",
                     recursive = TRUE, full.names = TRUE)
   if (length(mtx) == 0) cli::cli_abort("No matrix.(mtx|txt) found after untar of {gsm}.")
   read_10x_triplet(dirname(mtx[1]), cell_prefix = prefix)

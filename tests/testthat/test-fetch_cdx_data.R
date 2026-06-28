@@ -111,3 +111,31 @@ test_that("read_10x_triplet also reads the dense .txt layout (LB19 batch)", {
   expect_equal(as.numeric(m["GENEA", "SAMP|BC1-1"]), 7)     # 5 + 2 (dup collapse)
   expect_equal(as.numeric(m["GENEB", "SAMP|BC2-1"]), 3)
 })
+
+test_that("read_10x_triplet finds sample-prefixed filenames (SC53 batch)", {
+  skip_if_not_installed("Matrix")
+  d <- file.path(tempdir(), "prefixed_test"); dir.create(d, showWarnings = FALSE)
+  # Files prefixed with the sample name, as in the GSM4851xxx batch.
+  writeLines(c("ENSG1\tGENEA", "ENSG2\tGENEB"), file.path(d, "SC53cis.genes.tsv"))
+  writeLines(c("BC1-1", "BC2-1"), file.path(d, "SC53cis.barcodes.tsv"))
+  writeLines(c("%%MatrixMarket matrix coordinate integer general", "%",
+               "2 2 2", "1 1 4", "2 2 6"), file.path(d, "SC53cis.matrix.mtx"))
+  m <- read_10x_triplet(d, cell_prefix = "SC53cis")
+  expect_equal(rownames(m), c("GENEA", "GENEB"))
+  expect_equal(as.numeric(m["GENEA", "SC53cis|BC1-1"]), 4)
+  expect_equal(as.numeric(m["GENEB", "SC53cis|BC2-1"]), 6)
+})
+
+test_that("read_10x_triplet reads a gzipped MatrixMarket matrix", {
+  skip_if_not_installed("Matrix")
+  d <- file.path(tempdir(), "gz_test"); unlink(d, recursive = TRUE)
+  dir.create(d, showWarnings = FALSE)
+  writeLines(c("ENSG1\tGENEA", "ENSG2\tGENEB"), file.path(d, "genes.tsv"))
+  writeLines(c("BC1", "BC2"), file.path(d, "barcodes.tsv"))
+  con <- gzfile(file.path(d, "matrix.mtx.gz"), "w")    # only a gzipped matrix present
+  writeLines(c("%%MatrixMarket matrix coordinate integer general", "%",
+               "2 2 2", "1 1 9", "2 2 4"), con); close(con)
+  m <- read_10x_triplet(d)
+  expect_equal(as.numeric(m["GENEA", "BC1"]), 9)
+  expect_equal(as.numeric(m["GENEB", "BC2"]), 4)
+})
