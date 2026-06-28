@@ -46,6 +46,25 @@ test_that("call_sclc_subtype validates inputs", {
   expect_error(call_sclc_subtype(m[c("ascl1", "yap1"), ]), "marker")  # NEUROD1/POU2F3 missing
 })
 
+test_that("call_sclc_subtype requires markers named exactly A/N/P", {
+  m <- make_subtype_matrix()
+  expect_error(call_sclc_subtype(m, markers = list(A = "ascl1", N = "neurod1")), "A, N, P")
+  expect_error(call_sclc_subtype(m, markers = list(X = "ascl1", Y = "neurod1", Z = "pou2f3")), "A, N, P")
+})
+
+test_that("map_emt_to_subtype binds cleanly when NE values are sparse", {
+  m <- make_subtype_matrix()
+  subt <- suppressWarnings(call_sclc_subtype(m))
+  emt <- data.frame(sample = subt$sample,
+                    consensus = seq(0, 1, length.out = nrow(subt)),
+                    stringsAsFactors = FALSE)
+  ne <- stats::setNames(rep(NA_real_, nrow(subt)), subt$sample)
+  ne[1:2] <- c(0.1, 0.2)                              # only 2 non-NA -> every subtype <= 2
+  res <- map_emt_to_subtype(emt, subt, ne = ne)       # must not error on rbind
+  expect_true("cor_emt_ne" %in% names(res$by_subtype))
+  expect_true(all(is.na(res$by_subtype$cor_emt_ne)))
+})
+
 test_that("ne_score requires a template and is oriented NE-high", {
   set.seed(1)
   ne_genes <- paste0("NEG", 1:10); non_genes <- paste0("NONG", 1:10)

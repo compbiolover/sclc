@@ -3119,8 +3119,11 @@ subtype_calls <- call_sclc_subtype(marker_mat)   # genes-in-rows; markers matche
 scl_common$subtype <- subtype_calls$subtype
 scl_common$smarca4_ut_flag <- subtype_calls$smarca4_ut_flag
 
+# Keep A/N/P SCLC and exclude candidate SMARCA4-UT samples. (Previously YAP1-high
+# samples were labeled "Y" and dropped by the A/N/P filter; the new caller can
+# assign them an A/N/P label, so they must be excluded explicitly via the flag.)
 scl_common <- scl_common %>%
-  filter(subtype %in% c("A", "N", "P"))
+  filter(subtype %in% c("A", "N", "P") & !smarca4_ut_flag)
 
 
 generate_matched_samples <- function(data, subtype_column=subtype, subtype_to_match, num_samples_to_generate, replace = TRUE) {

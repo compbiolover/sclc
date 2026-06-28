@@ -96,6 +96,13 @@ call_sclc_subtype <- function(expr,
   if (ncol(expr) < 3) {
     cli::cli_abort("Subtype calling needs >= 3 samples for across-sample z-scores (got {ncol(expr)}).")
   }
+  # The output (z_A/z_N/z_P, margin) and downstream code assume exactly the
+  # three SCLC-A/N/P lineage TFs; `markers` lets you swap the gene SYMBOLS, not
+  # the subtype letters.
+  if (!identical(sort(names(markers)), c("A", "N", "P"))) {
+    cli::cli_abort(c("x" = "{.arg markers} must be a list named exactly A, N, P.",
+                     "i" = "Pass marker symbols for the three SCLC subtypes, e.g. list(A='ASCL1', N='NEUROD1', P='POU2F3')."))
+  }
   z <- lapply(markers, function(g) .sm_zrow(expr, g))
   missing <- names(z)[vapply(z, is.null, logical(1))]
   if (length(missing) > 0) {
@@ -246,9 +253,15 @@ map_emt_to_subtype <- function(emt_scores, subtypes, ne = NULL) {
       median_emt = stats::median(d$emt_consensus, na.rm = TRUE),
       stringsAsFactors = FALSE
     )
-    if (!is.null(ne) && sum(!is.na(d$ne)) > 2) {
-      row$cor_emt_ne <- stats::cor(d$emt_consensus, d$ne,
-                                   method = "spearman", use = "pairwise.complete.obs")
+    if (!is.null(ne)) {
+      # Always include the column (NA when too few NE values) so the per-subtype
+      # rows bind cleanly even in small cohorts.
+      row$cor_emt_ne <- if (sum(!is.na(d$ne)) > 2) {
+        stats::cor(d$emt_consensus, d$ne, method = "spearman",
+                   use = "pairwise.complete.obs")
+      } else {
+        NA_real_
+      }
     }
     row
   }))
