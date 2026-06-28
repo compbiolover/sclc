@@ -453,17 +453,24 @@ compute_emt_scores <- function(expr, signatures = load_emt_signatures(),
   consensus_cols <- method_cols
   if (drop_invalid_methods && length(method_cols) >= 2) {
     mp <- intersect(mes_markers, rownames(expr))
-    if (length(mp) >= 2) {
+    if (length(mp) < 2) {
+      cli::cli_warn(c(
+        "!" = "Skipping the consensus validity check: only {length(mp)} of the mesenchymal markers were found in the matrix (need >= 2).",
+        "i" = "All {length(method_cols)} methods are kept in the consensus unchecked. Supply matching {.arg mes_markers} (gene symbols) to enable the guard."
+      ))
+    } else {
       panel <- colMeans(expr[mp, , drop = FALSE], na.rm = TRUE)
       validity <- vapply(method_cols, function(m) suppressWarnings(
         stats::cor(df[[m]], panel[df$sample], method = "spearman",
                    use = "pairwise.complete.obs")), numeric(1))
       invalid <- names(validity)[is.finite(validity) & validity < min_marker_cor]
       if (length(invalid) > 0 && length(invalid) < length(method_cols)) {
-        cli::cli_warn(c(
-          "!" = "Excluding from the EMT consensus (weak correlation with mesenchymal markers): {paste(sprintf('%s (rho=%.2f)', invalid, validity[invalid]), collapse=', ')}.",
-          "i" = "These columns are kept in the output for transparency. 76GS in particular is CDH1-anchored and unreliable in neuroendocrine SCLC."
-        ))
+        msg <- c("!" = "Excluding from the EMT consensus (weak correlation with mesenchymal markers): {paste(sprintf('%s (rho=%.2f)', invalid, validity[invalid]), collapse=', ')}.",
+                 "i" = "These columns are kept in the output for transparency.")
+        if ("76gs" %in% invalid) {
+          msg <- c(msg, "i" = "76GS is CDH1-anchored and is expected to fail here in neuroendocrine SCLC.")
+        }
+        cli::cli_warn(msg)
         consensus_cols <- setdiff(consensus_cols, invalid)
       } else if (length(invalid) == length(method_cols)) {
         cli::cli_warn("All EMT methods correlate weakly with mesenchymal markers ({paste(mp, collapse=', ')}); keeping all in the consensus -- check the data and marker set.")

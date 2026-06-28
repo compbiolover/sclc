@@ -80,6 +80,17 @@ test_that("compute_emt_scores drops 76GS from consensus when CDH1 uninformative"
   expect_true("76gs" %in% attr(res2, "consensus_methods"))
 })
 
+test_that("consensus guard warns and skips when too few mesenchymal markers present", {
+  d <- make_gradient()
+  sigs <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes,
+               hallmark = NULL, mlr = NULL)
+  res <- expect_warning(
+    compute_emt_scores(d$expr, signatures = sigs, methods = c("76gs", "ks"),
+                       mes_markers = c("NOPE1", "NOPE2")),
+    "Skipping the consensus validity check")
+  expect_setequal(attr(res, "consensus_methods"), c("76gs", "ks"))  # nothing dropped
+})
+
 test_that("score_ks is in [-1, 1] and oriented mesenchymal-high", {
   d <- make_gradient()
   s <- score_ks(d$expr, epithelial_genes = d$epi, mesenchymal_genes = d$mes)
