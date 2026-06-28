@@ -7,6 +7,11 @@ Data/mirna_data/*.csv
 Data/cdx_scrnaseq/*
 !Data/cdx_scrnaseq/PROVENANCE.md
 
+# Chan 2021 SCLC atlas .h5ad (download separately; see
+# Data/chan_sclc/PROVENANCE.md). Keep the provenance doc, drop the big data.
+Data/chan_sclc/*
+!Data/chan_sclc/PROVENANCE.md
+
 # R session files
 .Rhistory
 .RData
