@@ -132,9 +132,12 @@ score_76gs <- function(expr, genes_76gs, cdh1_gene = "CDH1",
   present <- .match_genes(genes_76gs, expr, "76GS")
   cdh1 <- expr[cdh1_gene, ]
   sub <- expr[present, , drop = FALSE]
-  weights <- apply(sub, 1, function(g) suppressWarnings(stats::cor(g, cdh1)))
-  weights[is.na(weights)] <- 0           # constant genes contribute nothing
-  epithelial_score <- colSums(weights * sub)
+  weights <- apply(sub, 1, function(g)
+    suppressWarnings(stats::cor(g, cdh1, use = "pairwise.complete.obs")))
+  weights[is.na(weights)] <- 0           # constant / all-NA genes contribute nothing
+  # na.rm so a few missing expression values contribute 0 rather than poisoning
+  # the whole sample's score.
+  epithelial_score <- colSums(weights * sub, na.rm = TRUE)
   centered <- epithelial_score - mean(epithelial_score)
   stats::setNames(-centered, colnames(expr))   # negate -> higher = mesenchymal
 }
@@ -270,7 +273,9 @@ score_mlr <- function(expr, mlr_model, genes_are_rows = TRUE) {
     b0 + colSums(cls[[cc]] * x)
   }, numeric(ncol(expr)))
   eta <- cbind(reference = 0, eta)                 # reference class = epithelial
-  probs <- exp(eta) / rowSums(exp(eta))            # softmax
+  eta <- eta - apply(eta, 1, max)                  # stabilize softmax (avoid overflow)
+  ex <- exp(eta)
+  probs <- ex / rowSums(ex)                         # softmax
   class_levels <- 0:(ncol(eta) - 1)                # 0 = E, 1 = hybrid, 2 = M, ...
   score <- as.numeric(probs %*% class_levels)
   stats::setNames(score, colnames(expr))

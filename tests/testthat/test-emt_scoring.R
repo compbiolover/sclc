@@ -33,6 +33,16 @@ test_that("score_76gs is oriented mesenchymal-high", {
   expect_true(cor(s, 1:6, method = "spearman") > 0.9)
 })
 
+test_that("score_76gs tolerates a few missing values (no NA poisoning)", {
+  d <- make_gradient()
+  expr <- d$expr
+  expr["VIM", "s3"] <- NA          # a few scattered NAs
+  expr["CDH1", "s5"] <- NA
+  s <- score_76gs(expr, genes_76gs = d$all)
+  expect_true(all(is.finite(s)))   # not all-NA despite missing values
+  expect_gt(s[["s6"]], s[["s1"]])  # orientation preserved
+})
+
 test_that("score_ks is in [-1, 1] and oriented mesenchymal-high", {
   d <- make_gradient()
   s <- score_ks(d$expr, epithelial_genes = d$epi, mesenchymal_genes = d$mes)
