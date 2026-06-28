@@ -96,3 +96,18 @@ test_that("read_10x_triplet reads MM, collapses duplicate symbols, prefixes cell
   expect_equal(as.numeric(m["GENEA", "SAMP|BC2-1"]), 1)
   expect_equal(as.numeric(m["GENEB", "SAMP|BC2-1"]), 3)
 })
+
+test_that("read_10x_triplet also reads the dense .txt layout (LB19 batch)", {
+  skip_if_not_installed("Matrix")
+  d <- file.path(tempdir(), "dense_test"); dir.create(d, showWarnings = FALSE)
+  writeLines(c("ENSG1\tGENEA", "ENSG2\tGENEB", "ENSG3\tGENEA"),
+             file.path(d, "genes.txt"))
+  writeLines(c("BC1-1", "BC2-1"), file.path(d, "barcodes.txt"))
+  # dense genes x cells table, no header: same data as the MM case above.
+  writeLines(c("5\t1", "0\t3", "2\t0"), file.path(d, "matrix.txt"))
+  m <- read_10x_triplet(d, cell_prefix = "SAMP")
+  expect_equal(rownames(m), c("GENEA", "GENEB"))
+  expect_equal(colnames(m), c("SAMP|BC1-1", "SAMP|BC2-1"))
+  expect_equal(as.numeric(m["GENEA", "SAMP|BC1-1"]), 7)     # 5 + 2 (dup collapse)
+  expect_equal(as.numeric(m["GENEB", "SAMP|BC2-1"]), 3)
+})

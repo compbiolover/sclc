@@ -156,32 +156,56 @@ cdx_sample_table <- function(gse = "GSE138267", destdir = tempdir()) {
 # 3. Read a 10x triplet -> symbols x cells sparse matrix
 # ============================================================================
 
-#' Read a 10x (barcodes/genes/matrix) triplet into a symbols x cells matrix
+#' Read a 10x-style genes/barcodes/matrix bundle into a symbols x cells matrix
 #'
-#' @param dir Directory containing `barcodes.tsv`, `genes.tsv`, `matrix.mtx`
-#'   (optionally gzipped).
+#' Handles BOTH layouts present in GSE138267: the LB17 batch ships a sparse
+#' MatrixMarket triplet (`genes.tsv`/`barcodes.tsv`/`matrix.mtx`), the LB19 batch
+#' ships a DENSE tab-delimited table (`genes.txt`/`barcodes.txt`/`matrix.txt`,
+#' genes x cells). The matrix file is detected by its first line.
+#'
+#' @param dir Directory containing the bundle (files optionally gzipped).
 #' @param cell_prefix String prepended to each barcode (with "|") to keep cell
 #'   ids unique across samples. Default "" (no prefix).
-#' @param symbol_col Column of `genes.tsv` holding HGNC symbols. Default 2.
+#' @param symbol_col Column of the genes file holding HGNC symbols. Default 2.
 #' @return A sparse `dgCMatrix`, genes (symbols) in rows, cells in columns.
 #'   Duplicate symbols (the 10x reference has some) are collapsed by summing
 #'   their counts.
 #' @export
 read_10x_triplet <- function(dir, cell_prefix = "", symbol_col = 2) {
   .cdx_require("Matrix", bioc = FALSE)
-  pick <- function(stem) {
-    hits <- list.files(dir, pattern = paste0("^", stem, "(\\.gz)?$"), full.names = TRUE)
-    if (length(hits) == 0) cli::cli_abort("{.file {stem}} not found in {.path {dir}}.")
-    hits[1]
+  pick <- function(stems) {
+    for (s in stems) {
+      hits <- list.files(dir, pattern = paste0("^", s, "(\\.gz)?$"), full.names = TRUE)
+      if (length(hits) > 0) return(hits[1])
+    }
+    cli::cli_abort("None of {.val {stems}} found in {.path {dir}}.")
   }
-  mtx <- Matrix::readMM(pick("matrix.mtx"))
-  genes <- utils::read.delim(pick("genes.tsv"), header = FALSE, stringsAsFactors = FALSE)
-  barcodes <- utils::read.delim(pick("barcodes.tsv"), header = FALSE, stringsAsFactors = FALSE)[[1]]
-  if (nrow(genes) != nrow(mtx) || length(barcodes) != ncol(mtx)) {
-    cli::cli_abort(c("x" = "Triplet dimensions disagree in {.path {dir}}.",
-                     "i" = "matrix {nrow(mtx)}x{ncol(mtx)}, genes {nrow(genes)}, barcodes {length(barcodes)}."))
+  mfile <- pick(c("matrix.mtx", "matrix.txt"))
+  genes <- utils::read.delim(pick(c("genes.tsv", "genes.txt", "features.tsv")),
+                             header = FALSE, stringsAsFactors = FALSE)
+  barcodes <- utils::read.delim(pick(c("barcodes.tsv", "barcodes.txt")),
+                                header = FALSE, stringsAsFactors = FALSE)[[1]]
+  ng <- nrow(genes); nc <- length(barcodes)
+  # Detect MatrixMarket vs dense table from the first non-comment line.
+  con <- if (grepl("\\.gz$", mfile)) gzfile(mfile) else file(mfile)
+  first <- readLines(con, n = 1); close(con)
+  if (grepl("^%%MatrixMarket", first)) {
+    m <- methods::as(Matrix::readMM(mfile), "CsparseMatrix")
+  } else {
+    # Dense genes x cells table: scan row-major (fast, C-level), then reshape.
+    vals <- scan(mfile, what = integer(), quiet = TRUE, sep = "\t")
+    if (length(vals) != ng * nc) {
+      cli::cli_abort(c("x" = "Dense matrix has {length(vals)} values, expected {ng}x{nc}={ng*nc}.",
+                       "i" = "Check {.path {mfile}} against the genes/barcodes files."))
+    }
+    m <- methods::as(Matrix::Matrix(matrix(vals, nrow = ng, ncol = nc, byrow = TRUE),
+                                    sparse = TRUE), "CsparseMatrix")
+    rm(vals)
   }
-  m <- methods::as(mtx, "CsparseMatrix")
+  if (ng != nrow(m) || nc != ncol(m)) {
+    cli::cli_abort(c("x" = "Dimensions disagree in {.path {dir}}.",
+                     "i" = "matrix {nrow(m)}x{ncol(m)}, genes {ng}, barcodes {nc}."))
+  }
   symbols <- as.character(genes[[symbol_col]])
   cells <- if (nzchar(cell_prefix)) paste0(cell_prefix, "|", barcodes) else barcodes
   dimnames(m) <- list(symbols, cells)
@@ -214,9 +238,11 @@ read_10x_triplet <- function(dir, cell_prefix = "", symbol_col = 2) {
   exdir <- file.path(gdir, "triplet")
   dir.create(exdir, showWarnings = FALSE, recursive = TRUE)
   utils::untar(tar, exdir = exdir)
-  # Some tarballs nest the triplet in a subfolder; find where matrix.mtx landed.
-  mtx <- list.files(exdir, pattern = "^matrix\\.mtx(\\.gz)?$", recursive = TRUE, full.names = TRUE)
-  if (length(mtx) == 0) cli::cli_abort("matrix.mtx not found after untar of {gsm}.")
+  # Some tarballs nest the bundle in a subfolder; find where the matrix landed
+  # (LB17 ships matrix.mtx, LB19 ships matrix.txt).
+  mtx <- list.files(exdir, pattern = "^matrix\\.(mtx|txt)(\\.gz)?$",
+                    recursive = TRUE, full.names = TRUE)
+  if (length(mtx) == 0) cli::cli_abort("No matrix.(mtx|txt) found after untar of {gsm}.")
   read_10x_triplet(dirname(mtx[1]), cell_prefix = prefix)
 }
 
