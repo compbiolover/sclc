@@ -400,7 +400,10 @@ load_emt_signatures <- function(dir = "Data/emt_signatures") {
 #'   Offending method columns are still returned; only their consensus
 #'   contribution is removed. Never drops all methods.
 #' @param min_marker_cor Minimum Spearman correlation with the mesenchymal
-#'   marker panel for a method to enter the consensus. Default 0.2.
+#'   marker panel for a method to enter the consensus. Default 0.3. (Empirically,
+#'   across two SCLC cohorts -- George 2015 and GSE60052 -- the valid methods KS
+#'   and Hallmark correlate 0.64-0.83 with mesenchymal markers while the invalid
+#'   76GS sits at 0.07-0.26; 0.3 separates them with margin.)
 #' @param mes_markers Canonical mesenchymal markers used for the validity check.
 #' @return A tibble: `sample`, one column per method, `consensus`, `emt_state`.
 #'   Methods feeding the consensus are listed in `attr(., "consensus_methods")`.
@@ -409,7 +412,7 @@ compute_emt_scores <- function(expr, signatures = load_emt_signatures(),
                                methods = c("76gs", "ks", "hallmark", "mlr"),
                                genes_are_rows = TRUE,
                                hallmark_method = "gsva",
-                               drop_invalid_methods = TRUE, min_marker_cor = 0.2,
+                               drop_invalid_methods = TRUE, min_marker_cor = 0.3,
                                mes_markers = c("VIM", "FN1", "CDH2", "ZEB1",
                                                "ZEB2", "SNAI2")) {
   expr <- .as_gene_matrix(expr, genes_are_rows)
