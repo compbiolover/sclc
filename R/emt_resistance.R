@@ -521,6 +521,112 @@ emt_dispersion_downsample <- function(prepared,
 }
 
 # ============================================================================
+# 3c. CROSS-SECTIONAL VALIDATION: unpaired treated-vs-naive dispersion
+# ============================================================================
+
+#' Unpaired (between-sample) test of EMT dispersion across a treatment group
+#'
+#' For cohorts that are CROSS-SECTIONAL rather than within-model paired -- e.g.
+#' an atlas of independent patient tumors, some treatment-naive and some treated
+#' (Chan et al. 2021) -- the paired tests above do not apply. Here each SAMPLE
+#' (tumor) contributes one per-cell EMT dispersion value, and the two treatment
+#' groups are compared with an UNPAIRED Wilcoxon rank-sum (Mann-Whitney) test.
+#' This is the external-validation analogue of [emt_heterogeneity_shift()].
+#'
+#' @param per_cell A per-cell data.frame with an EMT score, a sample id, and a
+#'   two-level treatment group; each sample must map to exactly one group.
+#' @param emt_col,sample_col,group_col Column names. Defaults "emt","sample","group".
+#' @param reference The baseline group level (e.g. the naive group). Default: the
+#'   first level / first sorted value of `group_col`. The alternative is phrased
+#'   as the OTHER group vs this reference.
+#' @param dispersion "sd" (default), "var", "iqr", or "mad".
+#' @param alternative "greater" (default; the other group is MORE dispersed than
+#'   the reference), "two.sided", or "less".
+#' @param min_cells Minimum cells for a sample to contribute. Default 20.
+#' @param min_samples Minimum samples per group. Default 3.
+#' @return A list: `per_sample` (sample, group, n, dispersion) and `test`
+#'   (groups, n per group, median dispersion per group, Wilcoxon statistic,
+#'   Hodges-Lehmann estimate, p-value).
+#' @export
+emt_dispersion_groupwise <- function(per_cell, emt_col = "emt", sample_col = "sample",
+                                     group_col = "group", reference = NULL,
+                                     dispersion = c("sd", "var", "iqr", "mad"),
+                                     alternative = c("greater", "two.sided", "less"),
+                                     min_cells = 20, min_samples = 3) {
+  dispersion <- match.arg(dispersion)
+  alternative <- match.arg(alternative)
+  need <- c(emt_col, sample_col, group_col)
+  miss <- setdiff(need, names(per_cell))
+  if (length(miss) > 0) cli::cli_abort("Missing column(s): {.val {miss}}.")
+  disp_fun <- .er_disp_fun(dispersion)
+
+  df <- data.frame(
+    emt = as.numeric(per_cell[[emt_col]]),
+    sample = as.character(per_cell[[sample_col]]),
+    group = as.character(per_cell[[group_col]]),
+    stringsAsFactors = FALSE
+  )
+  df <- df[is.finite(df$emt) & !is.na(df$sample) & !is.na(df$group), , drop = FALSE]
+  if (nrow(df) == 0) cli::cli_abort("No cells with finite EMT and non-missing sample/group.")
+
+  # Each sample must belong to exactly one group.
+  per_samp_groups <- tapply(df$group, df$sample, function(g) length(unique(g)))
+  if (any(per_samp_groups > 1)) {
+    bad <- names(per_samp_groups)[per_samp_groups > 1]
+    cli::cli_abort(c("x" = "Sample(s) span >1 group: {.val {bad}}.",
+                     "i" = "{.arg group_col} must be constant within a sample."))
+  }
+  groups <- unique(df$group)
+  if (length(groups) != 2) {
+    cli::cli_abort("Need exactly 2 groups in {.arg group_col}; found {length(groups)}: {.val {groups}}.")
+  }
+  if (is.null(reference)) reference <- sort(groups)[1]
+  if (!reference %in% groups) cli::cli_abort("{.arg reference} {.val {reference}} is not a group level.")
+  other <- setdiff(groups, reference)
+
+  # Per-sample dispersion (samples below min_cells dropped).
+  ag_n <- tapply(df$emt, df$sample, function(z) sum(is.finite(z)))
+  keep <- names(ag_n)[ag_n >= min_cells]
+  dropped <- length(ag_n) - length(keep)
+  if (dropped > 0) cli::cli_warn("Dropping {dropped} sample(s) with < {min_cells} cells.")
+  sub <- df[df$sample %in% keep, , drop = FALSE]
+  disp <- tapply(sub$emt, sub$sample, function(z) { z <- z[is.finite(z)]; if (length(z) < 2) NA_real_ else disp_fun(z) })
+  grp  <- tapply(sub$group, sub$sample, function(g) g[1])
+  per_sample <- data.frame(
+    sample = names(disp), group = unname(grp[names(disp)]),
+    n = unname(ag_n[names(disp)]), dispersion = unname(disp),
+    row.names = NULL, stringsAsFactors = FALSE
+  )
+  per_sample <- per_sample[is.finite(per_sample$dispersion), , drop = FALSE]
+
+  n_ref <- sum(per_sample$group == reference); n_oth <- sum(per_sample$group == other)
+  if (n_ref < min_samples || n_oth < min_samples) {
+    cli::cli_warn(c(
+      "!" = "Groups too small for the test ({other}={n_oth}, {reference}={n_ref}; need >= {min_samples} each).",
+      "i" = "Per-sample dispersions are still returned."
+    ))
+    test <- data.frame(reference = reference, other = other, n_reference = n_ref,
+                       n_other = n_oth, method = NA_character_, statistic = NA_real_,
+                       estimate = NA_real_, p_value = NA_real_, alternative = alternative,
+                       dispersion = dispersion, stringsAsFactors = FALSE)
+    return(list(per_sample = .er_as_tbl(per_sample), test = .er_as_tbl(test)))
+  }
+  x <- per_sample$dispersion[per_sample$group == other]
+  y <- per_sample$dispersion[per_sample$group == reference]
+  wt <- suppressWarnings(stats::wilcox.test(x, y, alternative = alternative,
+                                            conf.int = TRUE, exact = FALSE))
+  est <- if (!is.null(wt$estimate)) unname(wt$estimate) else stats::median(x) - stats::median(y)
+  test <- data.frame(
+    reference = reference, other = other, n_reference = n_ref, n_other = n_oth,
+    median_reference = stats::median(y), median_other = stats::median(x),
+    method = "Wilcoxon rank-sum (Mann-Whitney)", statistic = unname(wt$statistic),
+    estimate = est, p_value = wt$p.value, alternative = alternative,
+    dispersion = dispersion, stringsAsFactors = FALSE
+  )
+  list(per_sample = .er_as_tbl(per_sample), test = .er_as_tbl(test))
+}
+
+# ============================================================================
 # 4. COMPOSITION: does the mesenchymal-cell fraction increase with resistance?
 # ============================================================================
 

@@ -215,6 +215,48 @@ test_that("emt_dispersion_downsample holds under equal-n subsampling", {
   expect_error(emt_dispersion_downsample(prepared, n_cells = 10^6), "exceeds the smallest")
 })
 
+# Cross-sectional (unpaired) generator: each sample is wholly naive or treated.
+make_groupwise_data <- function(n_naive = 6, n_treated = 6, n_per = 60, seed = 4,
+                                sd_naive = 1, sd_treated = 1.8) {
+  set.seed(seed)
+  mk <- function(prefix, k, sdv, grp) do.call(rbind, lapply(seq_len(k), function(i) {
+    base <- stats::rnorm(1, 0, 0.3)
+    data.frame(cell = paste0(prefix, i, "_", seq_len(n_per)),
+               sample = paste0(prefix, i), group = grp,
+               emt = stats::rnorm(n_per, base, sdv), stringsAsFactors = FALSE)
+  }))
+  rbind(mk("N", n_naive, sd_naive, "naive"), mk("T", n_treated, sd_treated, "treated"))
+}
+
+test_that("emt_dispersion_groupwise detects higher dispersion in treated tumors", {
+  d <- make_groupwise_data()
+  res <- emt_dispersion_groupwise(d, dispersion = "sd", alternative = "greater")
+  expect_equal(res$test$reference, "naive")          # alphabetical default
+  expect_equal(res$test$other, "treated")
+  expect_equal(res$test$n_reference, 6); expect_equal(res$test$n_other, 6)
+  expect_gt(res$test$median_other, res$test$median_reference)
+  expect_lt(res$test$p_value, 0.05)
+  expect_equal(nrow(res$per_sample), 12)
+  expect_true(all(c("sample","group","n","dispersion") %in% names(res$per_sample)))
+})
+
+test_that("emt_dispersion_groupwise is null when dispersion is equal", {
+  d <- make_groupwise_data(sd_naive = 1, sd_treated = 1, seed = 7)
+  res <- emt_dispersion_groupwise(d, dispersion = "sd", alternative = "greater")
+  expect_gt(res$test$p_value, 0.05)
+})
+
+test_that("emt_dispersion_groupwise validates inputs", {
+  d <- make_groupwise_data()
+  expect_error(emt_dispersion_groupwise(d[, c("cell","emt")]), "Missing")
+  # a sample appearing in two groups
+  bad <- d; bad$group[bad$sample == "N1"][1] <- "treated"
+  expect_error(emt_dispersion_groupwise(bad), "span >1 group")
+  # three groups
+  d3 <- d; d3$group[d3$sample == "T6"] <- "other"
+  expect_error(emt_dispersion_groupwise(d3), "exactly 2 groups")
+})
+
 test_that("emt_state_composition validates threshold and prepared", {
   d <- make_cdx_data()
   inp <- as_inputs(d)
