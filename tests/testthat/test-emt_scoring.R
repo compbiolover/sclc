@@ -61,9 +61,22 @@ test_that("cdh1_informativeness detects when CDH1 tracks epithelial state", {
   expect_gt(cdh1_informativeness(d$expr, d$epi, d$mes), 0.5)   # CDH1 covaries w/ epithelial
   u <- make_uninformative_cdh1()
   expect_lt(cdh1_informativeness(u$expr, u$epi, u$mes), 0.2)   # CDH1 decoupled
+  # constant CDH1 -> all correlations NA -> returns NA (not NaN), per docs
+  d2 <- make_gradient(); d2$expr["CDH1", ] <- 5
+  expect_true(is.na(cdh1_informativeness(d2$expr, d2$epi, d2$mes)))
 })
 
-test_that("compute_emt_scores drops 76GS from consensus when CDH1 uninformative", {
+test_that("consensus guard drops a constant (NA-correlation) method", {
+  d <- make_gradient()
+  sigs <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes,
+               hallmark = NULL, mlr = NULL)
+  bad <- d$expr; bad["CDH1", ] <- 5          # constant CDH1 -> 76GS becomes all-zero -> cor NA
+  res <- suppressWarnings(compute_emt_scores(bad, signatures = sigs, methods = c("76gs", "ks")))
+  expect_false("76gs" %in% attr(res, "consensus_methods"))   # NA validity treated as invalid
+  expect_true("ks" %in% attr(res, "consensus_methods"))
+})
+
+test_that("compute_emt_scores drops a method that fails to track mesenchymal markers (76GS in SCLC-like data)", {
   u <- make_uninformative_cdh1()
   sigs <- list(gs_76 = u$all, ks_epithelial = u$epi, ks_mesenchymal = u$mes,
                hallmark = NULL, mlr = NULL)

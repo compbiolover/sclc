@@ -466,7 +466,10 @@ compute_emt_scores <- function(expr, signatures = load_emt_signatures(),
       validity <- vapply(method_cols, function(m) suppressWarnings(
         stats::cor(df[[m]], panel[df$sample], method = "spearman",
                    use = "pairwise.complete.obs")), numeric(1))
-      invalid <- names(validity)[is.finite(validity) & validity < min_marker_cor]
+      # Non-finite validity (e.g. a constant method score -> cor() = NA) is
+      # treated as invalid: such a method tracks nothing and must not silently
+      # remain in the consensus.
+      invalid <- names(validity)[!is.finite(validity) | validity < min_marker_cor]
       if (length(invalid) > 0 && length(invalid) < length(method_cols)) {
         msg <- c("!" = "Excluding from the EMT consensus (weak correlation with mesenchymal markers): {paste(sprintf('%s (rho=%.2f)', invalid, validity[invalid]), collapse=', ')}.",
                  "i" = "These columns are kept in the output for transparency.")
@@ -532,7 +535,8 @@ cdh1_informativeness <- function(expr, epithelial_genes = NULL,
   cc <- function(g) suppressWarnings(stats::cor(g, cdh1, use = "pairwise.complete.obs"))
   ce <- mean(apply(expr[epi, , drop = FALSE], 1, cc), na.rm = TRUE)
   cm <- mean(apply(expr[mes, , drop = FALSE], 1, cc), na.rm = TRUE)
-  ce - cm
+  out <- ce - cm
+  if (!is.finite(out)) NA_real_ else out   # all-NA correlations -> NA, not NaN
 }
 
 #' Cross-method concordance (Spearman) -- WS1 QC positive control
