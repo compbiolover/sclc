@@ -44,3 +44,27 @@ test_that("read_h5ad_counts reads CSR, maps symbols, collapses duplicates", {
   expect_equal(colnames(m2), "c2")
   expect_equal(as.numeric(m2["GENEB", "c2"]), 3)
 })
+
+test_that("read_h5ad_counts resolves the CELLxGENE obs `_index` attribute", {
+  skip_if_not_installed("rhdf5")
+  skip_if_not_installed("Matrix")
+  f <- tempfile(fileext = ".h5ad"); on.exit(unlink(f), add = TRUE)
+  rhdf5::h5createFile(f)
+  rhdf5::h5createGroup(f, "raw"); rhdf5::h5createGroup(f, "raw/X")
+  rhdf5::h5write(c(5, 3), f, "raw/X/data")
+  rhdf5::h5write(as.integer(c(0, 1)), f, "raw/X/indices")
+  rhdf5::h5write(as.integer(c(0, 1, 2)), f, "raw/X/indptr")
+  fid <- rhdf5::H5Fopen(f); gid <- rhdf5::H5Gopen(fid, "raw/X")
+  rhdf5::h5writeAttribute("csr_matrix", gid, "encoding-type")
+  rhdf5::h5writeAttribute(as.integer(c(2, 2)), gid, "shape")
+  rhdf5::H5Gclose(gid); rhdf5::H5Fclose(fid)
+  rhdf5::h5createGroup(f, "var"); rhdf5::h5write(c("GENEA", "GENEB"), f, "var/feature_name")
+  # cell ids live in an obs column named by the /obs `_index` attribute (here "Cell")
+  rhdf5::h5createGroup(f, "obs"); rhdf5::h5write(c("cellA", "cellB"), f, "obs/Cell")
+  fid <- rhdf5::H5Fopen(f); gid <- rhdf5::H5Gopen(fid, "obs")
+  rhdf5::h5writeAttribute("Cell", gid, "_index")
+  rhdf5::H5Gclose(gid); rhdf5::H5Fclose(fid)
+
+  m <- read_h5ad_counts(f, layer = "raw")
+  expect_equal(colnames(m), c("cellA", "cellB"))     # used the attribute, not a literal _index
+})

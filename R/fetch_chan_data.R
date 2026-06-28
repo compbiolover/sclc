@@ -54,6 +54,15 @@
   as.vector(x)
 }
 
+#' Resolve and read the obs index (cell ids): anndata stores the index column
+#' name in the `/obs` group's `_index` attribute, not as a literal `obs/_index`.
+#' @keywords internal
+.chan_obs_index <- function(file) {
+  a <- rhdf5::h5readAttributes(file, "obs")
+  idxname <- if (!is.null(a[["_index"]])) as.character(a[["_index"]]) else "_index"
+  .chan_read_col(file, paste0("obs/", idxname))
+}
+
 #' Map the Chan `treatment` field to a two-level naive/treated factor
 #'
 #' Everything equal to `naive_label` is "naive"; every other (non-NA) value --
@@ -115,7 +124,7 @@ read_h5ad_counts <- function(file, keep_cells = NULL, layer = c("raw", "X"),
   )
   rm(data, indices, sel)
   symbols <- as.character(.chan_read_col(file, symbol_path))
-  cellids <- as.character(.chan_read_col(file, "obs/_index"))[keep_cells]
+  cellids <- as.character(.chan_obs_index(file))[keep_cells]
   dimnames(m) <- list(symbols, cellids)
   if (anyDuplicated(symbols)) {                   # collapse duplicate symbols by summing
     g <- factor(symbols, levels = unique(symbols))
