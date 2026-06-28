@@ -42,5 +42,19 @@ mesenchymal**.
 - **Gene IDs** are HGNC symbols. When scoring a matrix that uses Ensembl IDs,
   map to symbols first (the scorers warn on low overlap and error if < 3 genes
   match).
+- **Symbol corrections.** The upstream source spreadsheets (transcribed from
+  the original papers) contain a few OCR / Excel-date corruptions. The fetch
+  script restores the intended valid HGNC symbols via an explicit, documented
+  exact-token map (never heuristic O→0 / l→1 substitution, which would mangle
+  legitimate symbols like ELMO3, MYO6, NQO1, ENO2):
+  - 76GS: `Fl 1R`→`F11R`, `Clorf116`→`C1orf116`, `Cl orf172`→`C1orf172`,
+    `TMEM3OB`→`TMEM30B`, `TACSTDI`→`TACSTD1`.
+  - KS mesenchymal: `38961`→`SEPT1` (Excel serial 38961 = 1-Sep, the classic
+    SEPT1 date corruption; see Ziemann et al. 2016, *Genome Biol*).
+  Any remaining empty or purely-numeric token is dropped with a warning rather
+  than guessed at. Note: a handful of as-published 2013-era aliases (e.g.
+  `RBM35A`=ESRP1, `INADL`=PATJ, `MTAC2D1`=TC2N) are intentionally left as the
+  original symbols; map to current HGNC at scoring time if your matrix uses
+  newer symbols.
 - **Versioning**: record the `msigdbr` package version and the date of fetch in
   your analysis log; MSigDB updates the Hallmark sets between releases.

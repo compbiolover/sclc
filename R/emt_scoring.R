@@ -298,7 +298,11 @@ score_emt_singlecell <- function(mat, epithelial_genes, mesenchymal_genes,
                                  method = c("UCell", "AUCell"),
                                  genes_are_rows = TRUE, ncores = 1) {
   method <- match.arg(method)
-  if (!genes_are_rows) mat <- Matrix::t(mat)
+  if (!genes_are_rows) {
+    # Only reach for Matrix on sparse/Matrix inputs; base t() handles dense
+    # matrices without hard-requiring the Matrix package.
+    mat <- if (inherits(mat, "Matrix")) Matrix::t(mat) else t(mat)
+  }
   if (is.null(rownames(mat))) cli::cli_abort("{.arg mat} must have gene names as rownames.")
   cells <- colnames(mat)
   if (is.null(cells)) cells <- paste0("cell_", seq_len(ncol(mat)))
