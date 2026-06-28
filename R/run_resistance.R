@@ -137,6 +137,10 @@ print(comp$test)
 # =========================================================================
 
 summary_tbl <- do.call(rbind, list(loc$test, het$test, comp$test))
+# Persist the mesenchymal-fraction threshold (an attribute on comp$test) as a
+# column so ws4_resistance_summary.csv is unambiguously reproducible.
+summary_tbl$mes_threshold <- NA_real_
+summary_tbl$mes_threshold[summary_tbl$quantity == "mes_frac"] <- attr(comp$test, "threshold")
 utils::write.csv(summary_tbl, file.path(config$output_dir, "ws4_resistance_summary.csv"),
                  row.names = FALSE)
 utils::write.csv(loc$per_model,  file.path(config$output_dir, "per_model_location.csv"),  row.names = FALSE)

@@ -75,29 +75,51 @@
 #' @keywords internal
 .er_parse_condition <- function(x, sensitive = NULL, resistant = NULL) {
   s_raw <- as.character(x)
+  nonNA <- s_raw[!is.na(s_raw)]
   if (!is.null(sensitive) || !is.null(resistant)) {
     if (is.null(sensitive) || is.null(resistant)) {
       cli::cli_abort("Pass {.arg sensitive_labels} and {.arg resistant_labels} together, or neither.")
     }
+    overlap <- intersect(as.character(sensitive), as.character(resistant))
+    if (length(overlap) > 0) {
+      cli::cli_abort(c(
+        "x" = "{.arg sensitive_labels} and {.arg resistant_labels} share value(s): {.val {overlap}}.",
+        "i" = "A label can denote only one state; remove the overlap."
+      ))
+    }
     out <- rep(NA_character_, length(s_raw))
     out[s_raw %in% as.character(sensitive)] <- "sensitive"
     out[s_raw %in% as.character(resistant)] <- "resistant"
-  } else if (is.logical(x)) {
-    out <- ifelse(x, "resistant", "sensitive")
+  } else if (is.logical(x) ||
+             (length(nonNA) > 0 && all(grepl("^\\s*[01]\\s*$", nonNA)))) {
+    # Logical, numeric 0/1, OR *character* "0"/"1" (TSV imports often yield
+    # character columns) -> 1 = resistant, 0 = sensitive.
+    xi <- if (is.logical(x)) as.integer(x) else suppressWarnings(as.integer(trimws(s_raw)))
+    out <- ifelse(xi == 1L, "resistant", "sensitive")
   } else if (is.numeric(x)) {
-    if (!all(x[!is.na(x)] %in% c(0, 1))) {
-      cli::cli_abort(c("x" = "Numeric condition must be 0 (sensitive) / 1 (resistant).",
-                       "i" = "Saw values: {.val {sort(unique(x))}}. Pass labels via {.arg sensitive_labels}/{.arg resistant_labels} instead."))
-    }
-    out <- ifelse(x == 1, "resistant", "sensitive")
+    cli::cli_abort(c("x" = "Numeric condition must be 0 (sensitive) / 1 (resistant).",
+                     "i" = "Saw values: {.val {sort(unique(x))}}. Pass labels via {.arg sensitive_labels}/{.arg resistant_labels} instead."))
   } else {
-    s <- tolower(trimws(s_raw))
-    out <- rep(NA_character_, length(s))
-    # Whole-word keyword match so e.g. "sensitive" can't be caught by "resist".
-    res_kw <- "\\b(resistant|resistance|chemoresistant|chemo-resistant|relapse|relapsed|refractory|post-?relapse|post-?treatment|cr)\\b"
-    sen_kw <- "\\b(sensitive|chemosensitive|chemo-sensitive|naive|chemo-?naive|treatment-?naive|untreated|baseline|pretreatment|pre-?treatment|cs)\\b"
-    out[grepl(res_kw, s)] <- "resistant"
-    out[is.na(out) & grepl(sen_kw, s)] <- "sensitive"
+    # Keyword match on TOKENS split at any non-alphanumeric separator, so "_",
+    # "-", "/", and spaces all delimit (e.g. "SC4_CR" -> tokens "sc4","cr").
+    # `\\b` would NOT do this, since "_" is a regex word character.
+    res_kw <- c("resistant", "resistance", "chemoresistant", "relapse",
+                "relapsed", "refractory", "cr")
+    sen_kw <- c("sensitive", "chemosensitive", "naive", "chemonaive",
+                "untreated", "baseline", "pretreatment", "cs")
+    classify <- function(v) {
+      if (is.na(v) || !nzchar(v)) return(NA_character_)
+      toks <- strsplit(v, "[^a-z0-9]+")[[1]]
+      toks <- toks[nzchar(toks)]
+      if (any(toks %in% res_kw)) return("resistant")
+      if (any(toks %in% sen_kw)) return("sensitive")
+      # Substring fallback for glued compound words (only the long, unambiguous
+      # stems -- never the 2-letter cr/cs, which must stay token-exact).
+      if (grepl("resist|relaps|refractor", v)) return("resistant")
+      if (grepl("sensitiv|naive|untreat|baseline|pretreat", v)) return("sensitive")
+      NA_character_
+    }
+    out <- vapply(tolower(trimws(s_raw)), classify, character(1), USE.NAMES = FALSE)
   }
   unparsed <- unique(s_raw[is.na(out) & !is.na(s_raw)])
   if (length(unparsed) > 0) {
@@ -422,8 +444,12 @@ emt_state_composition <- function(prepared, threshold = NULL,
     cli::cli_abort(c("x" = "{.arg prepared} must come from prepare_resistance_emt().",
                      "i" = "Expected columns: cell, model, condition, emt."))
   }
-  if (!all(levels(factor(prepared$condition)) %in% c("sensitive", "resistant"))) {
-    cli::cli_abort("{.arg prepared}$condition must be sensitive / resistant only.")
+  # Check the actual values present, not factor levels: a factor carried over
+  # from subsetting may keep unused levels that are not in the data.
+  vals <- setdiff(unique(as.character(prepared$condition)), NA)
+  extra <- setdiff(vals, c("sensitive", "resistant"))
+  if (length(extra) > 0) {
+    cli::cli_abort("{.arg prepared}$condition has unexpected value(s): {.val {extra}}. Expected sensitive / resistant.")
   }
   invisible(TRUE)
 }

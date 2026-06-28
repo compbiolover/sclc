@@ -55,10 +55,26 @@ test_that(".er_parse_condition reads keywords, numerics, and explicit labels", {
   expect_equal(as.character(lab), c("sensitive", "resistant", "sensitive"))
 })
 
+test_that(".er_parse_condition handles underscore-delimited tokens and character 0/1", {
+  # Underscores must delimit tokens (\\b would treat "_" as a word char and miss these).
+  us <- .er_parse_condition(c("SC4_CR", "SC4_CS", "SC16_cr", "SC16_naive"))
+  expect_equal(as.character(us), c("resistant", "sensitive", "resistant", "sensitive"))
+  # Character "0"/"1" (as TSV imports often produce) read like numeric 0/1.
+  ch <- .er_parse_condition(c("0", "1", "0"))
+  expect_equal(as.character(ch), c("sensitive", "resistant", "sensitive"))
+  # A drug-named resistant arm without keywords stays unparseable (needs labels).
+  expect_error(.er_parse_condition(c("SC4_baseline", "SC4_Talazoparib")), "Could not parse")
+})
+
 test_that(".er_parse_condition errors on unparseable values and half-specified labels", {
   expect_error(.er_parse_condition(c("naive", "weird-state")), "Could not parse")
   expect_error(.er_parse_condition(c(0, 2)), "0 .sensitive. / 1 .resistant.")
   expect_error(.er_parse_condition(c("a", "b"), sensitive = "a"), "together")
+  # Overlapping explicit labels are rejected, not silently overwritten.
+  expect_error(
+    .er_parse_condition(c("x", "y"), sensitive = c("x", "y"), resistant = "y"),
+    "share value"
+  )
 })
 
 # ---- prepare ---------------------------------------------------------------
@@ -163,4 +179,16 @@ test_that("emt_state_composition validates threshold and prepared", {
   prepared <- prepare_resistance_emt(inp$emt, inp$meta)
   expect_error(emt_state_composition(prepared, threshold = c(1, 2)), "single finite")
   expect_error(emt_resistance_shift(data.frame(a = 1)), "prepare_resistance_emt")
+})
+
+test_that("analyses accept a condition factor carrying unused levels", {
+  d <- make_cdx_data()
+  inp <- as_inputs(d)
+  prepared <- prepare_resistance_emt(inp$emt, inp$meta)
+  # Re-level with a spurious unused level, as can happen after subsetting.
+  prepared$condition <- factor(as.character(prepared$condition),
+                               levels = c("sensitive", "resistant", "unused"))
+  expect_true(any(levels(prepared$condition) == "unused"))
+  res <- emt_resistance_shift(prepared)                 # must not reject on the unused level
+  expect_equal(nrow(res$per_model), 6)
 })
