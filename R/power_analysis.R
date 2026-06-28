@@ -57,33 +57,34 @@
 #' of patients.
 #'
 #' @param events Number of events (deaths / progressions). Length >= 1.
-#' @param hr Hazard ratio per 1 SD of the (standardized) covariate. Length >= 1.
-#' @param sigma SD of the covariate on the modeling scale. Defaults to 1
-#'   (standardized covariate), which is how we will scale EMT scores.
+#' @param hr Hazard ratio per 1 SD of the standardized covariate. Length >= 1.
+#'   Covariates are assumed standardized (mean 0, SD 1) -- the scale on which we
+#'   model EMT scores -- so the effect is already "per SD" and the covariate SD
+#'   does not enter the formula separately. Standardize before modeling if your
+#'   covariate is on another scale.
 #' @param alpha Two-sided type-I error rate. Default 0.05.
 #' @param r_sq Proportion of covariate variance explained by other covariates
-#'   (variance inflation for adjusted models). Default 0 (unadjusted). The
-#'   effective information is multiplied by `(1 - r_sq)`.
+#'   (variance inflation for adjusted models / interactions). Default 0
+#'   (unadjusted). The effective information is multiplied by `(1 - r_sq)`.
 #'
 #' @return A tibble (or data.frame) with one row per recycled `events`/`hr`
 #'   combination and a `power` column.
 #' @examples
 #' power_cox(events = c(40, 50, 80), hr = 1.5)
 #' @export
-power_cox <- function(events, hr, sigma = 1, alpha = 0.05, r_sq = 0) {
-  stopifnot(all(events > 0), all(hr > 0), sigma > 0,
+power_cox <- function(events, hr, alpha = 0.05, r_sq = 0) {
+  stopifnot(all(events > 0), all(hr > 0),
             alpha > 0, alpha < 1, r_sq >= 0, r_sq < 1)
   grid <- expand.grid(events = events, hr = hr,
                       KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
-  beta <- log(grid$hr) * sigma
+  beta <- log(grid$hr)                      # log-HR per 1 SD (standardized X)
   z_alpha <- .z(1 - alpha / 2)
   # Schoenfeld: Z ~ Normal( |beta| * sqrt(events * (1 - r_sq)), 1 )
   ncp <- abs(beta) * sqrt(grid$events * (1 - r_sq))
-  grid$sigma <- sigma
   grid$alpha <- alpha
   grid$r_sq <- r_sq
   grid$power <- stats::pnorm(ncp - z_alpha) + stats::pnorm(-ncp - z_alpha)
-  .as_tbl(grid[, c("events", "hr", "sigma", "alpha", "r_sq", "power")])
+  .as_tbl(grid[, c("events", "hr", "alpha", "r_sq", "power")])
 }
 
 #' Minimum detectable hazard ratio for a Cox model (per SD)
@@ -97,13 +98,13 @@ power_cox <- function(events, hr, sigma = 1, alpha = 0.05, r_sq = 0) {
 #' @examples
 #' mdes_cox(events = c(30, 50, 80))
 #' @export
-mdes_cox <- function(events, sigma = 1, alpha = 0.05, power = 0.80, r_sq = 0) {
-  stopifnot(all(events > 0), sigma > 0, alpha > 0, alpha < 1,
+mdes_cox <- function(events, alpha = 0.05, power = 0.80, r_sq = 0) {
+  stopifnot(all(events > 0), alpha > 0, alpha < 1,
             power > 0, power < 1, r_sq >= 0, r_sq < 1)
   z_sum <- .z(1 - alpha / 2) + .z(power)
-  beta <- z_sum / (sqrt(events * (1 - r_sq)) * sigma)
+  beta <- z_sum / sqrt(events * (1 - r_sq))
   .as_tbl(data.frame(events = events, alpha = alpha, power = power,
-                     sigma = sigma, r_sq = r_sq, mdes_hr = exp(beta)))
+                     r_sq = r_sq, mdes_hr = exp(beta)))
 }
 
 #' Events required for a Cox model to reach target power
@@ -114,14 +115,13 @@ mdes_cox <- function(events, sigma = 1, alpha = 0.05, power = 0.80, r_sq = 0) {
 #' @examples
 #' events_required_cox(hr = c(1.3, 1.5, 2.0))
 #' @export
-events_required_cox <- function(hr, sigma = 1, alpha = 0.05, power = 0.80,
-                                r_sq = 0) {
-  stopifnot(all(hr > 0), sigma > 0, alpha > 0, alpha < 1,
+events_required_cox <- function(hr, alpha = 0.05, power = 0.80, r_sq = 0) {
+  stopifnot(all(hr > 0), alpha > 0, alpha < 1,
             power > 0, power < 1, r_sq >= 0, r_sq < 1)
   z_sum <- .z(1 - alpha / 2) + .z(power)
-  beta <- log(hr) * sigma
+  beta <- log(hr)
   d <- (z_sum^2) / (beta^2 * (1 - r_sq))
-  .as_tbl(data.frame(hr = hr, alpha = alpha, power = power, sigma = sigma,
+  .as_tbl(data.frame(hr = hr, alpha = alpha, power = power,
                      r_sq = r_sq, events_required = ceiling(d)))
 }
 
@@ -199,10 +199,10 @@ n_required_correlation <- function(r, alpha = 0.05, power = 0.80) {
 #'   relative to a main effect. Default 4 (balanced 50/50 treatment split).
 #' @return A tibble with `events`, `variance_inflation`, and `mdes_hr_interaction`.
 #' @export
-mdes_interaction_cox <- function(events, sigma = 1, alpha = 0.05,
+mdes_interaction_cox <- function(events, alpha = 0.05,
                                  power = 0.80, variance_inflation = 4) {
   stopifnot(all(events > 0), variance_inflation >= 1)
-  out <- mdes_cox(events = events, sigma = sigma, alpha = alpha,
+  out <- mdes_cox(events = events, alpha = alpha,
                   power = power, r_sq = 1 - 1 / variance_inflation)
   names(out)[names(out) == "mdes_hr"] <- "mdes_hr_interaction"
   out$variance_inflation <- variance_inflation

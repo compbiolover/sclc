@@ -27,7 +27,7 @@ test_that("events_required_cox inverts power_cox / mdes_cox (round-trip)", {
   expect_lte(mdes_cox(events = d)$mdes_hr, hr + 1e-6)
 })
 
-test_that("power_cox is monotincreasing in events and in effect size", {
+test_that("power_cox is monotonically increasing in events and in effect size", {
   p_events <- power_cox(events = c(20, 40, 80, 160), hr = 1.5)$power
   expect_true(all(diff(p_events) > 0))
   p_hr <- power_cox(events = 50, hr = c(1.2, 1.5, 2.0))$power
