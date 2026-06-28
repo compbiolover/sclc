@@ -19,7 +19,9 @@
 #   - raw/X : CSR (csr_matrix) integer counts, shape [n_cells, n_genes].
 #   - var/feature_name : HGNC symbols (var/_index is Ensembl).
 #   - obs/disease, obs/cell_type_general, obs/treatment, obs/donor_id,
-#     obs/HTAN_Biospecimen_ID, obs/libsize : the columns we filter/group on.
+#     obs/HTAN_Biospecimen_ID : the columns we filter/group on. (Per-cell depth
+#     for the UMI QC is recomputed from raw/X, not read from obs/libsize, which
+#     is log10-scaled.)
 #
 # Conventions match the other modules: {cli} errors, tidy output, soft deps.
 # ============================================================================
@@ -165,9 +167,9 @@ load_chan_sclc <- function(file, min_umi = 1000,
   sampid  <- .chan_read_col(file, paste0("obs/", sample_col))
   group   <- chan_treatment_group(treat)
 
-  # Select SCLC malignant cells first, then QC on the actual library size
-  # (obs/libsize is log10-transformed, so we recompute from raw counts to match
-  # the CDX pipeline's min-UMI threshold exactly).
+  # Select SCLC malignant cells first, then QC on per-cell depth computed from
+  # raw/X (Matrix::colSums) -- not the stored obs/libsize, which is log10-scaled
+  # -- so the min-UMI threshold matches the CDX pipeline exactly.
   keep0 <- which(disease == disease_value & ctype == epithelial_value & !is.na(group))
   if (length(keep0) == 0) cli::cli_abort("No SCLC tumor cells match the disease/cell-type filters.")
   counts0 <- read_h5ad_counts(file, keep_cells = keep0, layer = "raw")

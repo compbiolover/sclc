@@ -47,7 +47,9 @@ chan <- load_chan_sclc("Data/chan_sclc/combined.h5ad", min_umi = 1000)
   SCLC tumor cells).
 - `obs/treatment` — `"Naive"` vs platinum-containing regimens → naive/treated.
 - `obs/donor_id`, `obs/HTAN_Biospecimen_ID` — patient / specimen (sample unit).
-- `obs/libsize` — precomputed per-cell library size (used for the ≥1000-UMI QC).
+- `obs/libsize` exists but is **log10-scaled**, so the loader does **not** use it
+  for QC; per-cell depth is recomputed from `raw/X` (`Matrix::colSums`) so the
+  ≥1000-UMI threshold matches the CDX pipeline exactly.
 
 ## Treatment groups (SCLC arm)
 
