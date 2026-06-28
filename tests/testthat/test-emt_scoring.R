@@ -90,9 +90,58 @@ test_that("score_mlr refuses to run without published coefficients", {
   expect_error(score_mlr(d$expr, bad), "coef")
 })
 
-test_that("Hallmark and single-cell paths require their Bioconductor deps", {
+test_that("score_hallmark_emt (GSVA) runs and is oriented mesenchymal-high", {
   d <- make_gradient()
   skip_if_not_installed("GSVA")
-  s <- score_hallmark_emt(d$expr, hallmark_genes = d$mes)  # mes set as proxy
+  # mesenchymal set as a proxy "EMT/Hallmark" set: enrichment should rise along
+  # the E -> M gradient.
+  s <- score_hallmark_emt(d$expr, hallmark_genes = d$mes)
   expect_length(s, 6)
+  expect_gt(s[["s6"]], s[["s1"]])
+})
+
+# ---- single-cell: synthetic sparse E/M cell mixture -------------------------
+make_sc_gradient <- function() {
+  set.seed(7)
+  epi <- c("CDH1", "EPCAM", "CLDN4", "CLDN7")
+  mes <- c("VIM", "ZEB1", "FN1", "CDH2")
+  bg  <- paste0("BG", seq_len(200))                  # background genes for ranking
+  genes <- c(epi, mes, bg)
+  n_epi <- 15L; n_mes <- 15L; ncell <- n_epi + n_mes
+  m <- matrix(stats::rpois(length(genes) * ncell, 1), nrow = length(genes),
+              dimnames = list(genes, paste0("c", seq_len(ncell))))
+  m[epi, seq_len(n_epi)] <- m[epi, seq_len(n_epi)] +
+    stats::rpois(length(epi) * n_epi, 20)
+  m[mes, (n_epi + 1):ncell] <- m[mes, (n_epi + 1):ncell] +
+    stats::rpois(length(mes) * n_mes, 20)
+  list(mat = Matrix::Matrix(m, sparse = TRUE), epi = epi, mes = mes,
+       epi_cells = seq_len(n_epi), mes_cells = (n_epi + 1):ncell)
+}
+
+test_that("score_emt_singlecell (UCell) scores mesenchymal cells higher", {
+  skip_if_not_installed("UCell")
+  d <- make_sc_gradient()
+  s <- score_emt_singlecell(d$mat, d$epi, d$mes, method = "UCell")
+  expect_length(s, ncol(d$mat))
+  expect_gt(mean(s[d$mes_cells]), mean(s[d$epi_cells]))
+})
+
+test_that("score_emt_singlecell (AUCell) scores mesenchymal cells higher", {
+  skip_if_not_installed("AUCell")
+  d <- make_sc_gradient()
+  s <- score_emt_singlecell(d$mat, d$epi, d$mes, method = "AUCell")
+  expect_length(s, ncol(d$mat))
+  expect_gt(mean(s[d$mes_cells]), mean(s[d$epi_cells]))
+})
+
+test_that("compute_emt_scores integrates 3 methods (76GS + KS + Hallmark)", {
+  skip_if_not_installed("GSVA")
+  d <- make_gradient()
+  sigs <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes,
+               hallmark = d$mes, mlr = NULL)
+  res <- compute_emt_scores(d$expr, signatures = sigs)
+  expect_true(all(c("76gs", "ks", "hallmark", "consensus") %in% names(res)))
+  expect_true(cor(res$consensus, 1:6, method = "spearman") > 0.9)
+  cc <- emt_method_concordance(res)
+  expect_equal(dim(cc), c(3, 3))
 })
