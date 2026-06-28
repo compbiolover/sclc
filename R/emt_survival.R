@@ -34,9 +34,26 @@
   if (is.logical(x)) return(as.integer(x))
   s <- toupper(trimws(as.character(x)))
   ev <- rep(NA_integer_, length(s))
-  ev[grepl("^1|DECEASED|DEAD|EVENT|PROGRESS|RELAPSE|YES|TRUE", s)] <- 1L
-  ev[grepl("^0|LIVING|ALIVE|CENSOR|NO|FALSE", s)] <- 0L
+  # 1) An explicit leading 0/1 wins (cBioPortal "1:DECEASED" / "0:LIVING").
+  ev[grepl("^1(:|$|[^0-9])", s)] <- 1L
+  ev[grepl("^0(:|$|[^0-9])", s)] <- 0L
+  # 2) Otherwise match whole-word keywords, WITHOUT overwriting a prior call
+  #    (so substrings like "DEAD" inside other words, or mixed tokens, can't flip it).
+  dead  <- grepl("\\b(DECEASED|DEAD|EVENT|PROGRESSION|PROGRESSED|RELAPSE|YES|TRUE)\\b", s)
+  alive <- grepl("\\b(LIVING|ALIVE|CENSOR(ED)?|NO|FALSE)\\b", s)
+  ev[is.na(ev) & dead] <- 1L
+  ev[is.na(ev) & alive] <- 0L
   ev
+}
+
+#' Standardize to mean 0 / SD 1, failing fast on a constant vector
+#' @keywords internal
+.sv_zscore <- function(x, name = "score") {
+  s <- stats::sd(x, na.rm = TRUE)
+  if (is.na(s) || s == 0) {
+    cli::cli_abort("{.val {name}} is constant (SD = 0) after filtering; cannot standardize or model it.")
+  }
+  (x - mean(x, na.rm = TRUE)) / s
 }
 
 # ============================================================================
@@ -112,7 +129,7 @@ emt_cox <- function(data, score = "emt_consensus", covariates = NULL,
   if (sum(d$.event) < 5) {
     cli::cli_warn("Only {sum(d$.event)} events; Cox estimates will be unstable (see WS0 power analysis).")
   }
-  if (standardize) d[[score]] <- as.numeric(scale(d[[score]]))
+  if (standardize) d[[score]] <- .sv_zscore(d[[score]], score)
   rhs <- paste(c(score, covariates), collapse = " + ")
   fit <- survival::coxph(stats::as.formula(sprintf("survival::Surv(.time, .event) ~ %s", rhs)),
                          data = d)
@@ -145,7 +162,13 @@ emt_km <- function(data, group = "emt_state") {
   if (!group %in% names(data)) cli::cli_abort("Group column {.val {group}} not found.")
   d <- as.data.frame(data)
   d <- d[!is.na(d[[group]]) & stats::complete.cases(d[, c(".time", ".event")]), , drop = FALSE]
-  d[[group]] <- factor(d[[group]])
+  d[[group]] <- droplevels(factor(d[[group]]))
+  if (nlevels(d[[group]]) < 2) {
+    cli::cli_abort("Need >= 2 non-empty groups in {.val {group}} for a log-rank test (found {nlevels(d[[group]])}).")
+  }
+  if (sum(d$.event) < 1) {
+    cli::cli_abort("No events in the data; cannot compute Kaplan-Meier differences.")
+  }
   f <- stats::as.formula(sprintf("survival::Surv(.time, .event) ~ %s", group))
   fit <- survival::survfit(f, data = d)
   sd_fit <- survival::survdiff(f, data = d)
@@ -177,7 +200,7 @@ emt_added_value <- function(data, score = "emt_consensus", base_covariates,
   if (length(base_covariates) < 1) cli::cli_abort("Provide >= 1 base covariate.")
   d <- as.data.frame(data)
   d <- d[stats::complete.cases(d[, c(".time", ".event", score, base_covariates)]), , drop = FALSE]
-  if (standardize) d[[score]] <- as.numeric(scale(d[[score]]))
+  if (standardize) d[[score]] <- .sv_zscore(d[[score]], score)
   surv <- "survival::Surv(.time, .event)"
   base <- survival::coxph(stats::as.formula(paste(surv, "~", paste(base_covariates, collapse = " + "))), data = d)
   full <- survival::coxph(stats::as.formula(paste(surv, "~", paste(c(base_covariates, score), collapse = " + "))), data = d)
@@ -212,9 +235,18 @@ pool_emt_survival <- function(data, cohort, score = "emt_consensus",
   if (!cohort %in% names(data)) cli::cli_abort("Cohort column {.val {cohort}} not found.")
   d <- as.data.frame(data)
   d <- d[stats::complete.cases(d[, c(".time", ".event", score, cohort, covariates)]), , drop = FALSE]
-  # standardize EMT within each cohort
-  d[[score]] <- stats::ave(d[[score]], d[[cohort]],
-                           FUN = function(x) as.numeric(scale(x)))
+  # Warn about cohorts that carry no within-cohort EMT variation (SD = 0 or
+  # n < 2): they cannot be standardized and contribute no EMT information.
+  sds <- tapply(d[[score]], d[[cohort]], function(v) stats::sd(v))
+  flat <- names(sds)[is.na(sds) | sds == 0]
+  if (length(flat) > 0) {
+    cli::cli_warn("Cohort(s) with no within-cohort EMT variation (mapped to 0, contribute no EMT signal): {paste(flat, collapse=', ')}.")
+  }
+  # standardize EMT within each cohort; SD=0/n<2 -> 0 (kept, not dropped)
+  d[[score]] <- stats::ave(d[[score]], d[[cohort]], FUN = function(x) {
+    s <- stats::sd(x)
+    if (is.na(s) || s == 0) rep(0, length(x)) else (x - mean(x)) / s
+  })
   rhs <- paste(c(score, covariates, sprintf("survival::strata(%s)", cohort)), collapse = " + ")
   fit <- survival::coxph(stats::as.formula(sprintf("survival::Surv(.time, .event) ~ %s", rhs)), data = d)
   s <- summary(fit)

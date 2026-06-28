@@ -33,6 +33,40 @@ test_that(".sv_parse_event handles numeric, logical, and cBioPortal strings", {
   expect_equal(.sv_parse_event(c(TRUE, FALSE)), c(1L, 0L))
 })
 
+test_that(".sv_parse_event prefers explicit prefix and matches whole words only", {
+  expect_equal(.sv_parse_event(c("1:LIVING", "0:DECEASED")), c(1L, 0L))  # numeric prefix wins
+  expect_true(is.na(.sv_parse_event("DEADLINE")))                        # 'DEAD' substring != whole word
+  expect_equal(.sv_parse_event(c("Censored", "Relapse")), c(0L, 1L))
+})
+
+test_that("emt_cox / emt_added_value error on a constant EMT score", {
+  d <- make_surv()
+  s <- prepare_survival(d$emt, d$clin, time_col = "os_time", event_col = "os_status",
+                        covariates = "stage")
+  s$emt_consensus <- 1
+  expect_error(emt_cox(s), "constant")
+  expect_error(emt_added_value(s, base_covariates = "stage"), "constant")
+})
+
+test_that("emt_km errors without >= 2 groups or without events", {
+  d <- make_surv()
+  s <- prepare_survival(d$emt, d$clin, time_col = "os_time", event_col = "os_status")
+  s1 <- s; s1$emt_state <- "M"
+  expect_error(emt_km(s1), ">= 2 non-empty groups")
+  s2 <- s; s2$.event <- 0L
+  expect_error(emt_km(s2), "No events")
+})
+
+test_that("pool_emt_survival warns on a flat cohort but still fits", {
+  d <- make_surv()
+  s <- prepare_survival(d$emt, d$clin, time_col = "os_time", event_col = "os_status",
+                        covariates = "cohort")
+  s$emt_consensus[s$cohort == "B"] <- 0.5          # cohort B has no EMT variation
+  res <- expect_warning(pool_emt_survival(s, cohort = "cohort"),
+                        "no within-cohort EMT variation")
+  expect_true(is.finite(res$coef$hr[res$coef$term == "emt_consensus"]))
+})
+
 test_that("prepare_survival joins and parses event/time", {
   d <- make_surv()
   s <- prepare_survival(d$emt, d$clin, time_col = "os_time", event_col = "os_status",
