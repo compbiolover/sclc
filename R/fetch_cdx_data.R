@@ -235,7 +235,10 @@ read_10x_triplet <- function(dir, cell_prefix = "", symbol_col = 2) {
     if (length(found) == 0) cli::cli_abort("No matrix tarball downloaded for {gsm}.")
     tar <- found[1]
   }
+  # Clear any prior extraction so a recursive search can't pick up a stale
+  # matrix file (e.g. if the tarball was refreshed) -- keeps caching deterministic.
   exdir <- file.path(gdir, "triplet")
+  unlink(exdir, recursive = TRUE)
   dir.create(exdir, showWarnings = FALSE, recursive = TRUE)
   utils::untar(tar, exdir = exdir)
   # Some tarballs nest the bundle in a subfolder; find where the matrix landed

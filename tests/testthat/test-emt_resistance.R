@@ -167,8 +167,9 @@ test_that("emt_state_composition detects the rise in mesenchymal-cell fraction",
   prepared <- prepare_resistance_emt(inp$emt, inp$meta)
   res <- emt_state_composition(prepared)
   expect_true(all(res$per_model$mes_frac_delta >= 0))
-  expect_true(all(res$per_model$mes_frac_resistant <= 1 &
-                  res$per_model$mes_frac_sensitive >= 0))
+  # both fractions must lie within [0, 1] (check both bounds for both columns)
+  fr <- c(res$per_model$mes_frac_sensitive, res$per_model$mes_frac_resistant)
+  expect_true(all(fr >= 0 & fr <= 1))
   expect_lt(res$test$p_value, 0.05)
   expect_false(is.null(attr(res$test, "threshold")))
 })
