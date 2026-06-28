@@ -54,6 +54,22 @@ test_that("emt_drug_correlation errors on insufficient overlap", {
   expect_error(emt_drug_correlation(d$emt, bad), "shared")
 })
 
+test_that("emt_drug_correlation rejects non-numeric features and EMT df without sample", {
+  d <- make_drug_data()
+  ch <- d$feats; ch[] <- as.character(ch)                 # character matrix, rownames kept
+  expect_error(emt_drug_correlation(d$emt, ch), "numeric")
+  df_nosample <- data.frame(id = names(d$emt), consensus = unname(d$emt),
+                            stringsAsFactors = FALSE)
+  expect_error(emt_drug_correlation(df_nosample, d$feats), "sample")
+})
+
+test_that("top_emt_associations validates required columns", {
+  d <- make_drug_data()
+  res <- emt_drug_correlation(d$emt, d$feats)
+  expect_error(top_emt_associations(res[, c("feature", "rho", "q")]),
+               "must come from emt_drug_correlation")
+})
+
 test_that("top_emt_associations filters by FDR and honors highlight", {
   d <- make_drug_data()
   res <- emt_drug_correlation(d$emt, d$feats)

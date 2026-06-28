@@ -29,15 +29,23 @@
 #' Coerce an EMT input to a named numeric vector (cell line -> score)
 #' @keywords internal
 .dr_emt_vector <- function(emt, score = "consensus") {
-  if (is.numeric(emt) && !is.null(names(emt))) return(emt)
-  if (is.data.frame(emt)) {
-    id <- if ("sample" %in% names(emt)) "sample" else names(emt)[1]
-    if (!score %in% names(emt)) {
-      cli::cli_abort("EMT data.frame must contain a {.val {score}} column (or pass a named numeric vector).")
+  if (is.numeric(emt) && !is.null(names(emt))) {
+    if (anyDuplicated(names(emt))) {
+      cli::cli_abort("{.arg emt} has duplicate cell-line names: {.val {unique(names(emt)[duplicated(names(emt))])}}.")
     }
-    return(stats::setNames(emt[[score]], as.character(emt[[id]])))
+    return(emt)
   }
-  cli::cli_abort("{.arg emt} must be a named numeric vector or a data.frame with sample + {score}.")
+  if (is.data.frame(emt)) {
+    if (!all(c("sample", score) %in% names(emt))) {
+      cli::cli_abort("EMT data.frame must contain {.val sample} and {.val {score}} columns (or pass a named numeric vector).")
+    }
+    if (!is.numeric(emt[[score]])) cli::cli_abort("EMT {.val {score}} column must be numeric.")
+    if (anyDuplicated(emt$sample)) {
+      cli::cli_abort("EMT {.val sample} column has duplicates: {.val {unique(emt$sample[duplicated(emt$sample)])}}.")
+    }
+    return(stats::setNames(emt[[score]], as.character(emt$sample)))
+  }
+  cli::cli_abort("{.arg emt} must be a named numeric vector or a data.frame with `sample` + `{score}`.")
 }
 
 # ============================================================================
@@ -71,7 +79,10 @@ emt_drug_correlation <- function(emt, features, method = c("spearman", "pearson"
     cli::cli_abort("{.arg features} must be a matrix/data.frame with cell-line IDs as rownames.")
   }
   if (is.null(colnames(features))) colnames(features) <- paste0("feature_", seq_len(ncol(features)))
-  storage.mode(features) <- "numeric"
+  if (!is.numeric(features)) {
+    cli::cli_abort(c("x" = "{.arg features} must be numeric.",
+                     "i" = "Non-numeric columns would be silently coerced to NA; clean/convert them first."))
+  }
 
   shared <- intersect(names(emt_v), rownames(features))
   if (length(shared) < min_n) {
@@ -116,8 +127,8 @@ emt_drug_correlation <- function(emt, features, method = c("spearman", "pearson"
 #' @return A tibble of the significant (and highlighted) associations.
 #' @export
 top_emt_associations <- function(cor_table, q_max = 0.05, highlight = NULL) {
-  if (!all(c("feature", "rho", "q") %in% names(cor_table))) {
-    cli::cli_abort("{.arg cor_table} must come from emt_drug_correlation().")
+  if (!all(c("feature", "rho", "p", "q") %in% names(cor_table))) {
+    cli::cli_abort("{.arg cor_table} must come from emt_drug_correlation() (needs feature, rho, p, q).")
   }
   keep <- cor_table$q <= q_max
   if (!is.null(highlight)) {
