@@ -1,0 +1,80 @@
+# tests/testthat/test-emt_subtype_map.R
+#
+# Tests for the SCLC subtype caller, NE score, and EMT->subtype mapping. Uses
+# synthetic data with a known structure; no external gene lists required.
+
+if (!exists("call_sclc_subtype", mode = "function")) {
+  source(testthat::test_path("..", "..", "R", "emt_subtype_map.R"))
+}
+
+# A/N/P expression matrix where POU2F3 has a high CONSTANT baseline, so a naive
+# raw-argmax caller would wrongly label everything "P"; z-scoring fixes it.
+make_subtype_matrix <- function() {
+  set.seed(5)
+  genes <- c("ascl1", "neurod1", "pou2f3", "yap1")   # lowercase (scl_common style)
+  samp <- c(paste0("A", 1:3), paste0("N", 1:3), paste0("P", 1:3), "UT1")
+  m <- matrix(5 + stats::rnorm(length(genes) * length(samp), 0, 0.1),
+              nrow = length(genes), dimnames = list(genes, samp))
+  m["pou2f3", ] <- m["pou2f3", ] + 20          # high constant baseline (raw-argmax trap)
+  m["ascl1",   1:3] <- m["ascl1",   1:3] + 10  # A samples
+  m["neurod1", 4:6] <- m["neurod1", 4:6] + 10  # N samples
+  m["pou2f3",  7:9] <- m["pou2f3",  7:9] + 10  # P samples
+  m["yap1",    10]  <- m["yap1",    10]  + 20  # SMARCA4-UT-like: high YAP1, low A/N/P
+  m
+}
+
+test_that("call_sclc_subtype uses z-scores, not raw magnitude", {
+  m <- make_subtype_matrix()
+  res <- suppressWarnings(call_sclc_subtype(m))        # UT1 triggers the SMARCA4-UT note
+  expect_equal(res$subtype[res$sample == "A1"], "A")  # despite POU2F3 baseline
+  expect_equal(res$subtype[res$sample == "N2"], "N")
+  expect_equal(res$subtype[res$sample == "P3"], "P")
+  # a raw-argmax caller would have called A1 "P" (POU2F3 ~25 > ASCL1 ~15)
+  expect_gt(m["pou2f3", "A1"], m["ascl1", "A1"])
+})
+
+test_that("call_sclc_subtype flags SMARCA4-UT (high YAP1, low A/N/P)", {
+  m <- make_subtype_matrix()
+  res <- suppressWarnings(call_sclc_subtype(m))
+  expect_true(res$smarca4_ut_flag[res$sample == "UT1"])
+  expect_false(any(res$smarca4_ut_flag[res$sample %in% c("A1", "N2", "P3")]))
+})
+
+test_that("call_sclc_subtype validates inputs", {
+  m <- make_subtype_matrix()
+  expect_error(call_sclc_subtype(m[, 1:2]), ">= 3 samples")
+  expect_error(call_sclc_subtype(m[c("ascl1", "yap1"), ]), "marker")  # NEUROD1/POU2F3 missing
+})
+
+test_that("ne_score requires a template and is oriented NE-high", {
+  set.seed(1)
+  ne_genes <- paste0("NEG", 1:10); non_genes <- paste0("NONG", 1:10)
+  genes <- c(ne_genes, non_genes)
+  tmpl <- data.frame(gene = genes,
+                     ne_ref = c(rep(10, 10), rep(1, 10)),
+                     nonne_ref = c(rep(1, 10), rep(10, 10)))
+  # one NE-like sample, one non-NE-like sample
+  expr <- cbind(
+    NE_like  = c(rep(10, 10), rep(1, 10)) + stats::rnorm(20, 0, 0.1),
+    NON_like = c(rep(1, 10), rep(10, 10)) + stats::rnorm(20, 0, 0.1)
+  )
+  rownames(expr) <- genes
+  expect_error(ne_score(expr, ne_template = NULL), "NE template")
+  s <- ne_score(expr, ne_template = tmpl)
+  expect_gt(s[["NE_like"]], s[["NON_like"]])
+  expect_gt(s[["NE_like"]], 0)
+})
+
+test_that("map_emt_to_subtype joins and summarizes by subtype", {
+  m <- make_subtype_matrix()
+  subt <- suppressWarnings(call_sclc_subtype(m))
+  emt <- data.frame(sample = subt$sample,
+                    consensus = seq(0, 1, length.out = nrow(subt)),
+                    emt_state = "hybrid", stringsAsFactors = FALSE)
+  ne_vec <- stats::setNames(seq(1, -1, length.out = nrow(subt)), subt$sample)
+  res <- map_emt_to_subtype(emt, subt, ne = ne_vec)
+  expect_true(all(c("per_sample", "by_subtype") %in% names(res)))
+  expect_true(all(c("A", "N", "P") %in% res$by_subtype$subtype))
+  expect_true("cor_emt_ne" %in% names(res$by_subtype))
+  expect_equal(nrow(res$per_sample), nrow(subt))
+})

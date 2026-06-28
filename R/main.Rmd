@@ -3102,26 +3102,25 @@ ggsave(p3, filename= "sex_specific_panel_4_preds_10000_iters.svg", units = "in",
 
 # Cancer Subtyping for 4 predictor model
 ```{r cancer subtyping survival 4 gene predictor}
-scl_common <- scl_common %>%
-  mutate(
-    # Calculate the maximum expression value across the specified genes for each patient
-    max_expression = pmax(ascl1, yap1, neurod1, pou2f3)
-  ) %>%
-  rowwise() %>%
-  mutate(
-    # Create a new column to indicate the category (A, Y, N, P) for each patient
-    subtype = case_when(
-      max_expression == ascl1 ~ "A",
-      max_expression == yap1 ~ "Y",
-      max_expression == neurod1 ~ "N",
-      max_expression == pou2f3 ~ "P",
-      TRUE ~ NA_character_
-    )
-  ) %>%
-  ungroup()
+# Robust SCLC subtype calls (A/N/P) via per-gene z-scores across patients,
+# replacing the earlier raw-expression argmax (pmax over ASCL1/YAP1/NEUROD1/
+# POU2F3), which is biased toward whichever marker is most highly expressed.
+# YAP1 is no longer a lineage subtype: YAP1-high SCLC was reclassified as
+# SMARCA4-deficient undifferentiated tumor (Meder et al. 2024, PMID 38328215),
+# so it is excluded from the call and surfaced as a SMARCA4-UT QC flag instead.
+# See R/emt_subtype_map.R.
+source("R/emt_subtype_map.R")
+
+marker_mat <- t(as.matrix(scl_common[, c("ascl1", "neurod1", "pou2f3", "yap1")]))
+colnames(marker_mat) <- rownames(scl_common)
+subtype_calls <- call_sclc_subtype(marker_mat)   # genes-in-rows; markers matched case-insensitively
+
+# subtype_calls rows are in scl_common row order (marker_mat built from it)
+scl_common$subtype <- subtype_calls$subtype
+scl_common$smarca4_ut_flag <- subtype_calls$smarca4_ut_flag
 
 scl_common <- scl_common %>%
-  filter(subtype == "A" | subtype == "N" | subtype == "P")
+  filter(subtype %in% c("A", "N", "P"))
 
 
 generate_matched_samples <- function(data, subtype_column=subtype, subtype_to_match, num_samples_to_generate, replace = TRUE) {
