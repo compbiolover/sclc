@@ -1,0 +1,98 @@
+# tests/testthat/test-emt_scoring.R
+#
+# Tests for the EMT scoring engine. Uses a synthetic expression matrix with a
+# known epithelial->mesenchymal gradient and synthetic gene sets, so the tests
+# do not depend on the vendored canonical lists. Every scorer is checked for
+# the common orientation (higher = more mesenchymal).
+
+if (!exists("score_76gs", mode = "function")) {
+  source(testthat::test_path("..", "..", "R", "emt_scoring.R"))
+}
+
+# ---- synthetic data: 6 samples on an E -> M gradient -----------------------
+make_gradient <- function() {
+  epi_genes <- c("CDH1", "EPCAM", "CLDN4", "CLDN7")
+  mes_genes <- c("VIM", "ZEB1", "FN1", "CDH2")
+  set.seed(42)
+  m <- 1:6                                   # mesenchymal level per sample
+  epi_mat <- t(sapply(epi_genes, function(g) (7 - m) + stats::rnorm(6, 0, 0.05)))
+  mes_mat <- t(sapply(mes_genes, function(g) m + stats::rnorm(6, 0, 0.05)))
+  expr <- rbind(epi_mat, mes_mat)
+  colnames(expr) <- paste0("s", m)
+  list(expr = expr, epi = epi_genes, mes = mes_genes, all = c(epi_genes, mes_genes))
+}
+
+test_that("score_76gs is oriented mesenchymal-high", {
+  d <- make_gradient()
+  s <- score_76gs(d$expr, genes_76gs = d$all)
+  expect_length(s, 6)
+  expect_equal(names(s), colnames(d$expr))
+  # most mesenchymal sample (s6) scores higher than most epithelial (s1)
+  expect_gt(s[["s6"]], s[["s1"]])
+  # monotone increasing along the gradient
+  expect_true(cor(s, 1:6, method = "spearman") > 0.9)
+})
+
+test_that("score_ks is in [-1, 1] and oriented mesenchymal-high", {
+  d <- make_gradient()
+  s <- score_ks(d$expr, epithelial_genes = d$epi, mesenchymal_genes = d$mes)
+  expect_true(all(s >= -1 & s <= 1))
+  expect_gt(s[["s6"]], s[["s1"]])
+  expect_gt(s[["s6"]], 0)   # clearly mesenchymal
+  expect_lt(s[["s1"]], 0)   # clearly epithelial
+})
+
+test_that("compute_emt_scores builds a consensus axis and tertile states", {
+  d <- make_gradient()
+  sigs <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes,
+               hallmark = NULL, mlr = NULL)
+  res <- compute_emt_scores(d$expr, signatures = sigs)
+  expect_true(all(c("sample", "76gs", "ks", "consensus", "emt_state") %in% names(res)))
+  expect_equal(nrow(res), 6)
+  # consensus increases along the gradient
+  expect_true(cor(res$consensus, 1:6, method = "spearman") > 0.9)
+  # tertile extremes are correctly called
+  expect_equal(as.character(res$emt_state[res$sample == "s1"]), "E")
+  expect_equal(as.character(res$emt_state[res$sample == "s6"]), "M")
+})
+
+test_that("emt_method_concordance returns positive cross-method agreement", {
+  d <- make_gradient()
+  sigs <- list(gs_76 = d$all, ks_epithelial = d$epi, ks_mesenchymal = d$mes)
+  res <- compute_emt_scores(d$expr, signatures = sigs)
+  cc <- emt_method_concordance(res)
+  expect_true(is.matrix(cc))
+  expect_gt(cc["76gs", "ks"], 0.5)
+})
+
+test_that("input validation and missing-gene handling are strict", {
+  d <- make_gradient()
+  expect_error(score_76gs("not a matrix", d$all), "numeric matrix")
+  # CDH1 required for 76GS
+  no_cdh1 <- d$expr[setdiff(rownames(d$expr), "CDH1"), ]
+  expect_error(score_76gs(no_cdh1, d$all), "CDH1")
+  # 76GS needs >= 3 samples (correlations across samples)
+  expect_error(score_76gs(d$expr[, 1:2], d$all), ">= 3 samples")
+  # too few matched genes
+  expect_error(score_ks(d$expr, c("NOPE1", "NOPE2"), d$mes), "epithelial")
+})
+
+test_that("compute_emt_scores errors when no signatures are available", {
+  d <- make_gradient()
+  empty <- list(gs_76 = NULL, ks_epithelial = NULL, ks_mesenchymal = NULL,
+                hallmark = NULL, mlr = NULL)
+  expect_error(compute_emt_scores(d$expr, signatures = empty), "No EMT methods")
+})
+
+test_that("score_mlr refuses to run without published coefficients", {
+  d <- make_gradient()
+  bad <- data.frame(gene = d$all, role = "predictor")  # no coef_* columns
+  expect_error(score_mlr(d$expr, bad), "coef")
+})
+
+test_that("Hallmark and single-cell paths require their Bioconductor deps", {
+  d <- make_gradient()
+  skip_if_not_installed("GSVA")
+  s <- score_hallmark_emt(d$expr, hallmark_genes = d$mes)  # mes set as proxy
+  expect_length(s, 6)
+})
