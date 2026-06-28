@@ -100,6 +100,7 @@ cat(sprintf("  scored %d cells\n", length(emt_cells)))
 cat("\nAssembling paired sensitive-vs-resistant frame...\n")
 prepared <- prepare_resistance_emt(
   emt_cells, cell_meta,
+  cell_col = "cell",                     # the metadata TSV carries an explicit cell column
   sensitive_labels = config$sensitive_labels,
   resistant_labels = config$resistant_labels,
   min_cells = config$min_cells

@@ -229,7 +229,9 @@ prepare_resistance_emt <- function(emt_cells, cell_meta,
                                    score = "consensus", min_cells = 20) {
   emt_v <- .er_emt_vector(emt_cells, score)
   if (!is.data.frame(cell_meta)) cli::cli_abort("{.arg cell_meta} must be a data.frame.")
-  need <- c(model_col, condition_col)
+  # When cell_col is given, require it too so a typo'd/missing id column fails
+  # fast here rather than as a confusing "No cell ids shared" downstream.
+  need <- c(model_col, condition_col, if (!is.null(cell_col)) cell_col)
   miss <- setdiff(need, names(cell_meta))
   if (length(miss) > 0) cli::cli_abort("Missing {.arg cell_meta} column(s): {.val {miss}}.")
 
@@ -265,6 +267,16 @@ prepare_resistance_emt <- function(emt_cells, cell_meta,
   )
   df <- df[is.finite(df$emt), , drop = FALSE]
   if (nrow(df) == 0) cli::cli_abort("No cells with finite EMT scores after the join.")
+
+  # Drop cells with a missing model or condition BEFORE grouping: an NA in either
+  # makes interaction() emit an NA group that table()/`%in%` then silently discard,
+  # so without this the cell count would shrink with no explanation.
+  bad_meta <- is.na(df$model) | is.na(df$condition)
+  if (any(bad_meta)) {
+    cli::cli_warn("Dropping {sum(bad_meta)} cell(s) with a missing model or condition.")
+    df <- df[!bad_meta, , drop = FALSE]
+  }
+  if (nrow(df) == 0) cli::cli_abort("No cells left after dropping missing model/condition.")
 
   # Drop tiny model x condition groups (unstable per-group summaries).
   grp <- interaction(df$model, df$condition, drop = TRUE)
