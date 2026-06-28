@@ -3112,7 +3112,7 @@ ggsave(p3, filename= "sex_specific_panel_4_preds_10000_iters.svg", units = "in",
 source("R/emt_subtype_map.R")
 
 marker_mat <- t(as.matrix(scl_common[, c("ascl1", "neurod1", "pou2f3", "yap1")]))
-colnames(marker_mat) <- rownames(scl_common)
+colnames(marker_mat) <- scl_common$patient.id    # real patient IDs (rownames are just indices)
 subtype_calls <- call_sclc_subtype(marker_mat)   # genes-in-rows; markers matched case-insensitively
 
 # subtype_calls rows are in scl_common row order (marker_mat built from it)

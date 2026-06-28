@@ -78,3 +78,15 @@ test_that("map_emt_to_subtype joins and summarizes by subtype", {
   expect_true("cor_emt_ne" %in% names(res$by_subtype))
   expect_equal(nrow(res$per_sample), nrow(subt))
 })
+
+test_that("map_emt_to_subtype validates the ne argument", {
+  m <- make_subtype_matrix()
+  subt <- suppressWarnings(call_sclc_subtype(m))
+  emt <- data.frame(sample = subt$sample,
+                    consensus = seq(0, 1, length.out = nrow(subt)),
+                    stringsAsFactors = FALSE)
+  expect_error(map_emt_to_subtype(emt, subt, ne = seq_len(nrow(subt))), "named")  # unnamed vector
+  expect_error(
+    map_emt_to_subtype(emt, subt, ne = data.frame(s = subt$sample, x = 1)), "sample"  # wrong columns
+  )
+})

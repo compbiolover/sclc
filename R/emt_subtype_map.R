@@ -220,7 +220,17 @@ map_emt_to_subtype <- function(emt_scores, subtypes, ne = NULL) {
     by = "sample"
   )
   if (!is.null(ne)) {
-    ne_df <- if (is.data.frame(ne)) ne else data.frame(sample = names(ne), ne = as.numeric(ne))
+    if (is.data.frame(ne)) {
+      if (!all(c("sample", "ne") %in% names(ne))) {
+        cli::cli_abort("{.arg ne} data.frame must contain `sample` and `ne` columns.")
+      }
+      ne_df <- ne[, c("sample", "ne")]
+    } else {
+      if (is.null(names(ne))) {
+        cli::cli_abort("{.arg ne} vector must be named by sample.")
+      }
+      ne_df <- data.frame(sample = names(ne), ne = as.numeric(ne), stringsAsFactors = FALSE)
+    }
     per <- merge(per, ne_df, by = "sample", all.x = TRUE)
   }
   if (nrow(per) == 0) {
