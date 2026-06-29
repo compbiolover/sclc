@@ -104,8 +104,11 @@ ne_df  <- data.frame(sample = names(ne), ne = as.numeric(ne), stringsAsFactors =
 coupled <- map_emt_to_subtype(emt_df, subt, ne = ne_df)
 
 shared <- Reduce(intersect, list(names(emt), names(ne)))
-overall_r <- stats::cor(emt[shared], ne[shared])
-overall_rho <- stats::cor(emt[shared], ne[shared], method = "spearman")
+# pairwise.complete.obs: per-cell scoring can yield NAs (missing genes / degenerate
+# ranks); report the correlation on the available cells rather than a blanket NA.
+overall_r <- stats::cor(emt[shared], ne[shared], use = "pairwise.complete.obs")
+overall_rho <- stats::cor(emt[shared], ne[shared], method = "spearman",
+                          use = "pairwise.complete.obs")
 
 cat("\n============================================================\n")
 cat("  RESULT: does EMT track NE / subtype?\n")
@@ -123,7 +126,8 @@ if (!is.null(config$group_col) && config$group_col %in% names(cell_meta)) {
   for (lev in sort(unique(g[!is.na(g)]))) {
     ix <- which(g == lev)
     if (length(ix) > 10) cat(sprintf("  %-12s n=%6d  r=%+.3f\n", lev, length(ix),
-                                      stats::cor(emt[shared][ix], ne[shared][ix])))
+                                      stats::cor(emt[shared][ix], ne[shared][ix],
+                                                 use = "pairwise.complete.obs")))
   }
 }
 

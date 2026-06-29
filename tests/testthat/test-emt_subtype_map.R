@@ -188,3 +188,10 @@ test_that("emt_ne_coupling reports per-group correlation + dispersion", {
   expect_true(all(c("n","cor_emt_ne","emt_sd","ne_sd") %in% names(res)))
   expect_error(emt_ne_coupling(pc, by = "missing"), "Missing")
 })
+
+test_that("call_sclc_subtype errors actionably on sparse + genes_are_rows=FALSE", {
+  skip_if_not_installed("Matrix")
+  m <- make_subtype_matrix()
+  sp <- methods::as(Matrix::Matrix(m, sparse = TRUE), "CsparseMatrix")
+  expect_error(call_sclc_subtype(sp, genes_are_rows = FALSE), "genes in rows")
+})

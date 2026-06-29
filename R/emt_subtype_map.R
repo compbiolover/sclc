@@ -95,7 +95,11 @@ call_sclc_subtype <- function(expr,
   # Single-cell input is a large sparse Matrix; subtype calling only needs the
   # A/N/P marker rows + YAP1, so densify just those (avoids materializing the
   # whole genes x cells matrix). Only safe when genes are in rows.
-  if (inherits(expr, "Matrix") && isTRUE(genes_are_rows)) {
+  if (inherits(expr, "Matrix")) {
+    if (!isTRUE(genes_are_rows)) {
+      cli::cli_abort(c("x" = "Sparse {.arg expr} is only supported with genes in rows.",
+                       "i" = "Transpose to genes-in-rows or pass {.code genes_are_rows = TRUE}."))
+    }
     if (is.null(rownames(expr))) cli::cli_abort("{.arg expr} must have gene symbols as rownames.")
     want <- toupper(unlist(c(markers, yap1_gene), use.names = FALSE))
     rows <- which(toupper(rownames(expr)) %in% want)
@@ -370,6 +374,7 @@ map_emt_to_subtype <- function(emt_scores, subtypes, ne = NULL) {
 aggregate_pseudobulk <- function(mat, groups, fun = c("sum", "mean"),
                                  genes_are_rows = TRUE) {
   fun <- match.arg(fun)
+  .sm_require("Matrix")
   if (!genes_are_rows) mat <- if (inherits(mat, "Matrix")) Matrix::t(mat) else t(mat)
   if (length(groups) != ncol(mat)) {
     cli::cli_abort("length(groups) ({length(groups)}) must equal ncol(mat) ({ncol(mat)}).")
