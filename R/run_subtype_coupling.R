@@ -61,6 +61,10 @@ if (!file.exists(config$counts_path) || !file.exists(config$cell_meta_path)) {
 cat("Loading single-cell data...\n")
 counts <- readRDS(config$counts_path)
 cell_meta <- utils::read.delim(config$cell_meta_path, stringsAsFactors = FALSE)
+if (!"cell" %in% names(cell_meta)) {
+  stop(sprintf("cell_metadata.tsv (%s) must contain a 'cell' column; found: %s",
+               config$cell_meta_path, paste(names(cell_meta), collapse = ", ")))
+}
 cat(sprintf("  %d genes x %d cells; %d metadata rows\n",
             nrow(counts), ncol(counts), nrow(cell_meta)))
 
@@ -80,7 +84,14 @@ ne <- ne_score_singlecell(counts, ne_template = load_ne_template(),
                           method = config$sc_method)
 
 cat("Calling A/N/P subtype per cell...\n")
-subt <- suppressWarnings(call_sclc_subtype(counts))
+# Do NOT suppress warnings: call_sclc_subtype() flags SMARCA4-UT-like cells
+# (high YAP1, low A/N/P), a QC signal worth surfacing in a runner.
+subt <- call_sclc_subtype(counts)
+n_ut <- sum(subt$smarca4_ut_flag, na.rm = TRUE)
+if (n_ut > 0) {
+  cat(sprintf("  QC: %d/%d cell(s) flagged SMARCA4-UT-like (high YAP1, low A/N/P) -- review.\n",
+              n_ut, nrow(subt)))
+}
 
 
 # =========================================================================
