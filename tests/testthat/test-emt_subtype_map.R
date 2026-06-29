@@ -100,6 +100,23 @@ test_that("vendored Zhang NE template loads and scores correctly", {
   expect_gt(s[["NE"]], 0); expect_lt(s[["NON"]], 0)
 })
 
+test_that("ne_score_singlecell scores NE-like cells higher (per-cell, UCell)", {
+  skip_if_not_installed("UCell")
+  set.seed(3)
+  ne_g <- paste0("NEG", 1:10); non_g <- paste0("NONG", 1:10)
+  tmpl <- data.frame(gene = c(ne_g, non_g),
+                     class = c(rep("NE", 10), rep("non_NE", 10)), stringsAsFactors = FALSE)
+  genes <- c(ne_g, non_g, paste0("BG", 1:30))
+  m <- matrix(stats::rpois(length(genes) * 40, 1), nrow = length(genes),
+              dimnames = list(genes, paste0("c", 1:40)))
+  m[ne_g, 1:20]    <- m[ne_g, 1:20]    + 8     # cells 1-20 are NE-like
+  m[non_g, 21:40]  <- m[non_g, 21:40]  + 8     # cells 21-40 are non-NE-like
+  s <- ne_score_singlecell(m, ne_template = tmpl, method = "UCell")
+  expect_length(s, 40)
+  expect_gt(mean(s[1:20]), mean(s[21:40]))     # NE-like cells score higher
+  expect_error(ne_score_singlecell(m, ne_template = NULL), "NE template")
+})
+
 test_that("map_emt_to_subtype joins and summarizes by subtype", {
   m <- make_subtype_matrix()
   subt <- suppressWarnings(call_sclc_subtype(m))

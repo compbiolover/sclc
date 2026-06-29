@@ -2,10 +2,21 @@
 Data/mirna_data/*.txt
 Data/mirna_data/*.csv
 
+# CDX single-cell RNA-seq matrices (download separately; see
+# Data/cdx_scrnaseq/PROVENANCE.md). Keep the provenance doc, drop the big data.
+Data/cdx_scrnaseq/*
+!Data/cdx_scrnaseq/PROVENANCE.md
+
+# Chan 2021 SCLC atlas .h5ad (download separately; see
+# Data/chan_sclc/PROVENANCE.md). Keep the provenance doc, drop the big data.
+Data/chan_sclc/*
+!Data/chan_sclc/PROVENANCE.md
+
 # R session files
 .Rhistory
 .RData
 .Rproj.user/
+.Rprofile
 
 # Output files
 Outputs/

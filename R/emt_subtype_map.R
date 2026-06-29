@@ -192,6 +192,78 @@ ne_score <- function(expr, ne_template = load_ne_template(), genes_are_rows = TR
   stats::setNames(scores, colnames(expr))
 }
 
+#' Require a soft dependency with an actionable error
+#' @keywords internal
+.sm_require <- function(pkg, bioc = FALSE) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    how <- if (bioc) sprintf("BiocManager::install('%s')", pkg) else sprintf("install.packages('%s')", pkg)
+    cli::cli_abort(c("x" = "Package {.pkg {pkg}} is required for this function.",
+                     "i" = "Install it with {.code {how}}."))
+  }
+}
+
+#' Per-cell neuroendocrine (NE) score for single-cell data (UCell / AUCell)
+#'
+#' The single-cell analogue of [ne_score()]: scores each cell for the Zhang 2018
+#' NE and non-NE gene programs with a rank-based method robust to single-cell
+#' sparsity, then returns the NE-minus-nonNE contrast (higher = more
+#' neuroendocrine). Use this when scoring a sparse cell x gene matrix, where the
+#' bulk correlation form of [ne_score()] is noisy per cell.
+#'
+#' @param mat Genes-in-rows expression matrix (raw or normalized counts); a
+#'   sparse `dgCMatrix` is accepted.
+#' @param ne_template Output of [load_ne_template()] (`gene`, `class` with values
+#'   "NE"/"non_NE"). Required -- the 50 genes are not hand-typed.
+#' @param method "UCell" (default) or "AUCell".
+#' @param genes_are_rows Whether genes are in rows. Default TRUE.
+#' @param ncores Cores for UCell. Default 1.
+#' @return Named numeric vector (one per cell); higher = more neuroendocrine.
+#' @export
+ne_score_singlecell <- function(mat, ne_template = load_ne_template(),
+                                method = c("UCell", "AUCell"),
+                                genes_are_rows = TRUE, ncores = 1) {
+  method <- match.arg(method)
+  if (is.null(ne_template) || !is.data.frame(ne_template) ||
+      !all(c("gene", "class") %in% names(ne_template))) {
+    cli::cli_abort(c(
+      "x" = "ne_score_singlecell() needs the Zhang 2018 NE template (gene, class).",
+      "i" = "Vendor it at Data/sclc_signatures/zhang_ne_50.tsv -- see PROVENANCE.md."
+    ))
+  }
+  cls <- gsub("[^a-z]", "", tolower(ne_template$class))   # "NE"->"ne", "non_NE"->"nonne"
+  ne_genes <- ne_template$gene[cls == "ne"]
+  nonne_genes <- ne_template$gene[cls == "nonne"]
+  if (length(ne_genes) < 1 || length(nonne_genes) < 1) {
+    cli::cli_abort("NE template must contain both NE and non_NE genes (found {length(ne_genes)}/{length(nonne_genes)}).")
+  }
+  if (!genes_are_rows) {
+    mat <- if (inherits(mat, "Matrix")) Matrix::t(mat) else t(mat)
+  }
+  if (is.null(rownames(mat))) cli::cli_abort("{.arg mat} must have gene symbols as rownames.")
+  # Ensure the matrix carries cell names so UCell/AUCell output rows line up with
+  # the returned vector.
+  if (is.null(colnames(mat))) colnames(mat) <- paste0("cell_", seq_len(ncol(mat)))
+  cells <- colnames(mat)
+  present <- function(g) {
+    unique(rownames(mat)[toupper(rownames(mat)) %in% toupper(g)])  # matrix casing, deduped
+  }
+  sigs <- list(NE = present(ne_genes), nonNE = present(nonne_genes))
+  if (length(sigs$NE) < 1 || length(sigs$nonNE) < 1) {
+    cli::cli_abort("Too few NE/non-NE template genes found in the matrix (NE={length(sigs$NE)}, nonNE={length(sigs$nonNE)}).")
+  }
+  if (method == "UCell") {
+    .sm_require("UCell", bioc = TRUE)
+    sc <- UCell::ScoreSignatures_UCell(mat, features = sigs, ncores = ncores)
+    ne <- sc[, "NE_UCell"]; non <- sc[, "nonNE_UCell"]
+  } else {
+    .sm_require("AUCell", bioc = TRUE)
+    rk <- AUCell::AUCell_buildRankings(mat, plotStats = FALSE, verbose = FALSE)
+    au <- AUCell::getAUC(AUCell::AUCell_calcAUC(sigs, rk, verbose = FALSE))
+    ne <- au["NE", ]; non <- au["nonNE", ]
+  }
+  stats::setNames(as.numeric(ne - non), cells)
+}
+
 # ============================================================================
 # 3. Map the EMT axis onto subtype / NE
 # ============================================================================
