@@ -52,6 +52,17 @@ test_that("call_sclc_subtype requires markers named exactly A/N/P", {
   expect_error(call_sclc_subtype(m, markers = list(X = "ascl1", Y = "neurod1", Z = "pou2f3")), "A, N, P")
 })
 
+test_that("call_sclc_subtype accepts a sparse single-cell matrix (densifies markers only)", {
+  skip_if_not_installed("Matrix")
+  m <- make_subtype_matrix()
+  sp <- methods::as(Matrix::Matrix(m, sparse = TRUE), "CsparseMatrix")
+  res <- suppressWarnings(call_sclc_subtype(sp))            # same answers as the dense call
+  expect_equal(res$subtype[res$sample == "A1"], "A")
+  expect_equal(res$subtype[res$sample == "N2"], "N")
+  expect_equal(res$subtype[res$sample == "P3"], "P")
+  expect_true(res$smarca4_ut_flag[res$sample == "UT1"])
+})
+
 test_that("map_emt_to_subtype binds cleanly when NE values are sparse", {
   m <- make_subtype_matrix()
   subt <- suppressWarnings(call_sclc_subtype(m))
