@@ -92,6 +92,15 @@ call_sclc_subtype <- function(expr,
                               yap1_gene = "YAP1", genes_are_rows = TRUE,
                               confidence_min = 0.25, yap1_flag_z = 1,
                               anp_flag_z = 0) {
+  # Single-cell input is a large sparse Matrix; subtype calling only needs the
+  # A/N/P marker rows + YAP1, so densify just those (avoids materializing the
+  # whole genes x cells matrix). Only safe when genes are in rows.
+  if (inherits(expr, "Matrix") && isTRUE(genes_are_rows)) {
+    if (is.null(rownames(expr))) cli::cli_abort("{.arg expr} must have gene symbols as rownames.")
+    want <- toupper(unlist(c(markers, yap1_gene), use.names = FALSE))
+    rows <- which(toupper(rownames(expr)) %in% want)
+    expr <- as.matrix(expr[rows, , drop = FALSE])
+  }
   expr <- .sm_gene_matrix(expr, genes_are_rows)
   if (ncol(expr) < 3) {
     cli::cli_abort("Subtype calling needs >= 3 samples for across-sample z-scores (got {ncol(expr)}).")
