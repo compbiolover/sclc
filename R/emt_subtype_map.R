@@ -348,3 +348,81 @@ map_emt_to_subtype <- function(emt_scores, subtypes, ne = NULL) {
   }))
   list(per_sample = .sm_as_tbl(per), by_subtype = .sm_as_tbl(by_sub))
 }
+
+# ============================================================================
+# 4. Single-cell robustness helpers (subtype-coupling arm)
+# ============================================================================
+
+#' Aggregate a single-cell matrix to per-group pseudobulk
+#'
+#' Sums (or averages) counts across the cells of each group, giving a
+#' genes x groups matrix. Calling SCLC subtypes on per-TUMOR pseudobulk is more
+#' robust than per-cell across-cell z-scoring, which inflates rare-marker calls
+#' (e.g. over-calls POU2F3/SCLC-P) in heterogeneous multi-patient data.
+#'
+#' @param mat Genes-in-rows expression matrix (sparse `dgCMatrix` accepted).
+#' @param groups Vector of length `ncol(mat)` giving each cell's group; cells
+#'   with `NA` group are dropped.
+#' @param fun "sum" (default) or "mean" over the cells of each group.
+#' @param genes_are_rows Whether genes are in rows. Default TRUE.
+#' @return A dense numeric matrix, genes x groups (columns named by group).
+#' @export
+aggregate_pseudobulk <- function(mat, groups, fun = c("sum", "mean"),
+                                 genes_are_rows = TRUE) {
+  fun <- match.arg(fun)
+  if (!genes_are_rows) mat <- if (inherits(mat, "Matrix")) Matrix::t(mat) else t(mat)
+  if (length(groups) != ncol(mat)) {
+    cli::cli_abort("length(groups) ({length(groups)}) must equal ncol(mat) ({ncol(mat)}).")
+  }
+  keep <- !is.na(groups)
+  if (!any(keep)) cli::cli_abort("All cells have a missing group.")
+  mat <- mat[, keep, drop = FALSE]; groups <- groups[keep]
+  g <- factor(as.character(groups))
+  ind <- methods::as(Matrix::fac2sparse(g), "CsparseMatrix")   # levels x cells
+  pb <- as.matrix(mat %*% Matrix::t(ind))                       # genes x groups (sum)
+  colnames(pb) <- levels(g)
+  if (fun == "mean") pb <- sweep(pb, 2, as.numeric(table(g)), "/")
+  pb
+}
+
+#' Per-group EMT<->NE coupling alongside EMT/NE heterogeneity
+#'
+#' For each group (e.g. CDX model or patient tumor) returns the per-cell
+#' correlation between the EMT and NE axes together with the spread of each
+#' axis. This formalizes the observation that the EMT<->NE anticorrelation only
+#' manifests where there is cell-to-cell heterogeneity: groups with little EMT/NE
+#' spread (homogeneous tumors) have weak, sign-unstable coupling.
+#'
+#' @param per_cell A per-cell data.frame with EMT, NE, and a grouping column.
+#' @param by Name of the grouping column.
+#' @param emt_col,ne_col Column names. Defaults "emt","ne".
+#' @param method Correlation method: "spearman" (default) or "pearson".
+#' @param min_cells Minimum cells for a group to be reported. Default 20.
+#' @return A tibble: `group`, `n`, `cor_emt_ne`, `emt_sd`, `ne_sd`, sorted by
+#'   `group`. (Correlate `cor_emt_ne` against `emt_sd`/`ne_sd` across groups to
+#'   see the heterogeneity dependence.)
+#' @export
+emt_ne_coupling <- function(per_cell, by, emt_col = "emt", ne_col = "ne",
+                            method = c("spearman", "pearson"), min_cells = 20) {
+  method <- match.arg(method)
+  need <- c(by, emt_col, ne_col)
+  miss <- setdiff(need, names(per_cell))
+  if (length(miss) > 0) cli::cli_abort("Missing column(s): {.val {miss}}.")
+  d <- data.frame(group = as.character(per_cell[[by]]),
+                  emt = as.numeric(per_cell[[emt_col]]),
+                  ne = as.numeric(per_cell[[ne_col]]), stringsAsFactors = FALSE)
+  d <- d[is.finite(d$emt) & is.finite(d$ne) & !is.na(d$group), , drop = FALSE]
+  parts <- split(d, d$group)
+  rows <- lapply(names(parts), function(g) {
+    s <- parts[[g]]
+    if (nrow(s) < min_cells) return(NULL)
+    data.frame(group = g, n = nrow(s),
+               cor_emt_ne = suppressWarnings(stats::cor(s$emt, s$ne, method = method)),
+               emt_sd = stats::sd(s$emt), ne_sd = stats::sd(s$ne),
+               stringsAsFactors = FALSE)
+  })
+  out <- do.call(rbind, rows)
+  if (is.null(out)) cli::cli_abort("No group reached {min_cells} cells.")
+  out <- out[order(out$group), , drop = FALSE]; rownames(out) <- NULL
+  .sm_as_tbl(out)
+}
